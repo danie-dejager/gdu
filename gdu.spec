@@ -1,3 +1,6 @@
+%global         goipath     github.com/dundee/gdu/v5
+%global         debug_package %{nil}
+
 Name:           gdu
 Version:        5.31.0
 Release:        2%{?dist}
@@ -11,13 +14,12 @@ Source0:        https://github.com/dundee/gdu/archive/refs/tags/v%{version}.tar.
 BuildRequires:  golang
 BuildRequires:  systemd-rpm-macros
 BuildRequires:  git
+BuildRequires:  gzip
 
 Provides:       %{name} = %{version}
 
 %description
 Pretty fast disk usage analyzer written in Go.
-
-%global debug_package %{nil}
 
 %prep
 %autosetup -n %{name}-%{version}
@@ -32,15 +34,16 @@ GO111MODULE=on CGO_ENABLED=0 go build \
 -modcacherw \
 -ldflags \
 "-s -w \
--X 'github.com/dundee/gdu/v5/build.Version=v%{version}' \
--X 'github.com/dundee/gdu/v5/build.User=$USER' \
--X 'github.com/dundee/gdu/v5/build.Time=$SOURCE_DATE_EPOCH' \
--o %{name} github.com/dundee/%{name}/v5/cmd/%{name}
+-X '%{goipath}/build.Version=v%{version}' \
+-X '%{goipath}/build.User=$USER' \
+-X '%{goipath}/build.Time=$SOURCE_DATE_EPOCH' \
+-o %{name} %{goipath}/cmd/%{name}
+gzip %{name}.1
 
 %install
 rm -rf $RPM_BUILD_ROOT
 install -Dpm 0755 %{name} %{buildroot}%{_bindir}/%{name}
-install -Dpm 0755 %{name}.1 $RPM_BUILD_ROOT%{_mandir}/man1/gdu.1
+install -Dpm 0644 %{name}.1.gz $RPM_BUILD_ROOT%{_mandir}/man1/gdu.1.gz
 
 %check
 
@@ -56,6 +59,7 @@ install -Dpm 0755 %{name}.1 $RPM_BUILD_ROOT%{_mandir}/man1/gdu.1
 
 %changelog
 * Mon Sep 8 2025 - Danie de Jager - 5.31.0-2
+- Fix license details
 * Thu Jun 11 2025 - Danie de Jager - 5.31.0-1
 * Tue Feb 4 2025 - Danie de Jager - 5.30.1-2
 - fix: set "GOINSECURE=go.opencensus.io"
