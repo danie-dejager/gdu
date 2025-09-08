@@ -23,6 +23,8 @@ Pretty fast disk usage analyzer written in Go.
 
 %prep
 %autosetup -n %{name}-%{version}
+go mod edit -require=github.com/ulikunitz/xz@v0.5.15
+go mod tidy
 go mod vendor
 
 %build
@@ -32,6 +34,7 @@ GO111MODULE=on CGO_ENABLED=0 go build \
   -buildmode=pie \
   -mod=readonly \
   -modcacherw \
+  -mod=vendor \
   -ldflags "-s -w \
     -X %{goipath}/build.Version=v%{version} \
     -X %{goipath}/build.User=$USER \
@@ -59,6 +62,7 @@ install -Dpm 0644 %{name}.1.gz $RPM_BUILD_ROOT%{_mandir}/man1/gdu.1.gz
 
 %changelog
 * Mon Sep 8 2025 - Danie de Jager - 5.31.0-2
+- Fix for CVE-2025-58058
 - Fix license details
 * Wed Jun 11 2025 - Danie de Jager - 5.31.0-1
 * Tue Feb 4 2025 - Danie de Jager - 5.30.1-2
