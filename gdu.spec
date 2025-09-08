@@ -21,6 +21,7 @@ Pretty fast disk usage analyzer written in Go.
 
 %prep
 %autosetup -n %{name}-%{version}
+go mod vendor
 
 %build
 export GOINSECURE=go.opencensus.io
@@ -48,6 +49,8 @@ install -Dpm 0755 %{name}.1 $RPM_BUILD_ROOT%{_mandir}/man1/gdu.1
 %preun
 
 %files
+%doc README.md docs/ configuration.md
+%license vendor/modules.txt
 %{_bindir}/gdu
 %{_mandir}/man1/gdu.1.gz
 
