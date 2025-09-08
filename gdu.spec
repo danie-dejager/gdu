@@ -1,9 +1,9 @@
 Name:           gdu
 Version:        5.31.0
-Release:        1
+Release:        2%{?dist}
 Summary:        Pretty fast disk usage analyzer written in Go
 
-License:        MIT
+License:        Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND ISC AND MIT
 URL:            https://github.com/dundee/gdu
 
 Source0:        https://github.com/dundee/gdu/archive/refs/tags/v%{version}.tar.gz
@@ -52,6 +52,7 @@ install -Dpm 0755 %{name}.1 $RPM_BUILD_ROOT%{_mandir}/man1/gdu.1
 %{_mandir}/man1/gdu.1.gz
 
 %changelog
+* Mon Sep 8 2025 - Danie de Jager - 5.31.0-2
 * Thu Jun 11 2025 - Danie de Jager - 5.31.0-1
 * Tue Feb 4 2025 - Danie de Jager - 5.30.1-2
 - fix: set "GOINSECURE=go.opencensus.io"
