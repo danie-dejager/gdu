@@ -28,16 +28,16 @@ go mod vendor
 %build
 export GOINSECURE=go.opencensus.io
 GO111MODULE=on CGO_ENABLED=0 go build \
--trimpath \
--buildmode=pie \
--mod=readonly \
--modcacherw \
--ldflags \
-"-s -w \
--X '%{goipath}/build.Version=v%{version}' \
--X '%{goipath}/build.User=$USER' \
--X '%{goipath}/build.Time=$SOURCE_DATE_EPOCH' \
--o %{name} %{goipath}/cmd/%{name}
+  -trimpath \
+  -buildmode=pie \
+  -mod=readonly \
+  -modcacherw \
+  -ldflags "-s -w \
+    -X %{goipath}/build.Version=v%{version} \
+    -X %{goipath}/build.User=$USER \
+    -X %{goipath}/build.Time=$SOURCE_DATE_EPOCH" \
+  -o %{name} %{goipath}/cmd/%{name}
+
 gzip %{name}.1
 
 %install
@@ -60,7 +60,7 @@ install -Dpm 0644 %{name}.1.gz $RPM_BUILD_ROOT%{_mandir}/man1/gdu.1.gz
 %changelog
 * Mon Sep 8 2025 - Danie de Jager - 5.31.0-2
 - Fix license details
-* Thu Jun 11 2025 - Danie de Jager - 5.31.0-1
+* Wed Jun 11 2025 - Danie de Jager - 5.31.0-1
 * Tue Feb 4 2025 - Danie de Jager - 5.30.1-2
 - fix: set "GOINSECURE=go.opencensus.io"
 * Mon Dec 30 2024 Daniel Milde - 5.30.1-1
