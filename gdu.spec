@@ -1,5 +1,5 @@
 Name:           gdu
-Version:        5.32.0
+Version:        5.33.0
 Release:        1
 Summary:        Pretty fast disk usage analyzer written in Go
 
