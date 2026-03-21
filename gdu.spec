@@ -1,5 +1,5 @@
 Name:           gdu
-Version:        5.34.1
+Version:        5.34.2
 Release:        1
 Summary:        Pretty fast disk usage analyzer written in Go
 
@@ -52,6 +52,7 @@ install -Dpm 0755 %{name}.1 $RPM_BUILD_ROOT%{_mandir}/man1/gdu.1
 %{_mandir}/man1/gdu.1.gz
 
 %changelog
+* Sat Mar 21 2026 - Danie de Jager - 5.34.2-1
 * Mon Mar 9 2026 Daniel Milde - 5.34.0-1
 - feat: add interactive file type filtering via -T key by @ShivamB25 in #493
 - feat: allow navigating above launch directory by @ShivamB25 in #494
