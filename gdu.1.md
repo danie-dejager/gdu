@@ -63,6 +63,8 @@ size of the file to which symlink points to (symlinks to directories are not fol
 
 **-n**, **\--non-interactive**\[=false\] Do not run in interactive mode
 
+**\--interactive**\[=false\] Force interactive mode even when output is not a TTY
+
 **-p**, **\--no-progress**\[=false\] Do not show progress in
 non-interactive mode
 
@@ -82,7 +84,7 @@ non-interactive mode
 
 **-M**, **\--show-mtime**\[=false\] Show latest mtime of items in directory
 
-**\--archive-browsing**\[=false\] Enable browsing of zip/jar archives
+**\--archive-browsing**\[=false\] Enable browsing of zip/jar/tar archives (tar, tar.gz, tar.bz2, tar.xz)
 
 **\--depth**\[=0\] Show directory structure up to specified depth in non-interactive mode (0 means the flag is ignored)
 

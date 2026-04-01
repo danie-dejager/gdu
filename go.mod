@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/dgraph-io/badger/v4 v4.9.1
-	github.com/fatih/color v1.18.0
+	github.com/fatih/color v1.19.0
 	github.com/gdamore/tcell/v2 v2.13.8
 	github.com/h2non/filetype v1.1.3
 	github.com/maruel/natural v1.3.0
@@ -18,7 +18,7 @@ require (
 	golang.org/x/sys v0.42.0
 	golang.org/x/text v0.34.0
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.47.0
+	modernc.org/sqlite v1.48.0
 )
 
 require (

@@ -2,18 +2,22 @@ package app
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"regexp"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 
+	"github.com/dundee/gdu/v5/internal/common"
 	"github.com/dundee/gdu/v5/internal/testapp"
 	"github.com/dundee/gdu/v5/internal/testdev"
 	"github.com/dundee/gdu/v5/internal/testdir"
 	"github.com/dundee/gdu/v5/pkg/device"
+	gfs "github.com/dundee/gdu/v5/pkg/fs"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -31,6 +35,36 @@ func TestVersion(t *testing.T) {
 
 	assert.Contains(t, out, "Version:\t development")
 	assert.Nil(t, err)
+}
+
+func TestShouldRunInNonInteractiveModeInteractiveOverridesNoTTY(t *testing.T) {
+	flags := &Flags{Interactive: true}
+
+	assert.False(t, flags.ShouldRunInNonInteractiveMode(false))
+}
+
+func TestShouldRunInNonInteractiveMode(t *testing.T) {
+	flags := &Flags{NonInteractive: true}
+
+	assert.True(t, flags.ShouldRunInNonInteractiveMode(false))
+}
+
+func TestShouldRunInNonInteractiveModeInteractiveKeepsNonInteractiveOnlyFlags(t *testing.T) {
+	flags := &Flags{Interactive: true, Summarize: true}
+
+	assert.True(t, flags.ShouldRunInNonInteractiveMode(false))
+}
+
+func TestInteractiveAndNonInteractiveConflict(t *testing.T) {
+	out, err := runApp(
+		&Flags{Interactive: true, NonInteractive: true},
+		[]string{"."},
+		true,
+		testdev.DevicesInfoGetterMock{},
+	)
+
+	assert.Empty(t, out)
+	assert.ErrorContains(t, err, "--interactive and --non-interactive cannot be used at once")
 }
 
 func TestAnalyzePath(t *testing.T) {
@@ -591,6 +625,53 @@ func TestMaxCoresLowEdge(t *testing.T) {
 	assert.NotEqual(t, runtime.NumCPU(), runtime.GOMAXPROCS(0))
 	assert.Empty(t, out)
 	assert.Nil(t, err)
+}
+
+type uiTimeFilterMock struct {
+	timeFilter common.TimeFilter
+}
+
+func (m *uiTimeFilterMock) ListDevices(getter device.DevicesInfoGetter) error { return nil }
+func (m *uiTimeFilterMock) AnalyzePath(path string, parentDir gfs.Item) error { return nil }
+func (m *uiTimeFilterMock) ReadAnalysis(input io.Reader) error                { return nil }
+func (m *uiTimeFilterMock) ReadFromStorage(storagePath, path string) error    { return nil }
+func (m *uiTimeFilterMock) SetIgnoreTypes(types []string)                     {}
+func (m *uiTimeFilterMock) SetIgnoreDirPaths(paths []string)                  {}
+func (m *uiTimeFilterMock) SetIgnoreDirPatterns(paths []string) error         { return nil }
+func (m *uiTimeFilterMock) SetIgnoreFromFile(ignoreFile string) error         { return nil }
+func (m *uiTimeFilterMock) SetIgnoreHidden(value bool)                        {}
+func (m *uiTimeFilterMock) SetIncludeTypes(types []string)                    {}
+func (m *uiTimeFilterMock) SetFollowSymlinks(value bool)                      {}
+func (m *uiTimeFilterMock) SetShowAnnexedSize(value bool)                     {}
+func (m *uiTimeFilterMock) SetAnalyzer(analyzer common.Analyzer)              {}
+func (m *uiTimeFilterMock) SetTimeFilter(timeFilter common.TimeFilter) {
+	m.timeFilter = timeFilter
+}
+func (m *uiTimeFilterMock) SetArchiveBrowsing(value bool) {}
+func (m *uiTimeFilterMock) SetCollapsePath(value bool)    {}
+func (m *uiTimeFilterMock) StartUILoop() error            { return nil }
+
+func TestSetTimeFiltersInvalid(t *testing.T) {
+	a := &App{Flags: &Flags{Since: "not-a-date"}}
+	ui := &uiTimeFilterMock{}
+
+	err := a.setTimeFilters(ui)
+
+	assert.ErrorContains(t, err, "invalid time filter")
+}
+
+func TestSetTimeFiltersSetsFilter(t *testing.T) {
+	futureDate := time.Now().Add(48 * time.Hour).Format("2006-01-02")
+	a := &App{Flags: &Flags{Since: futureDate}}
+	ui := &uiTimeFilterMock{}
+
+	err := a.setTimeFilters(ui)
+
+	assert.Nil(t, err)
+	if assert.NotNil(t, ui.timeFilter) {
+		assert.False(t, ui.timeFilter(time.Now()))
+		assert.True(t, ui.timeFilter(time.Now().Add(72*time.Hour)))
+	}
 }
 
 // nolint: unparam // Why: it's used in linux tests
