@@ -5,6 +5,7 @@ package analyze
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -295,6 +296,32 @@ func TestSqliteItemGetPath(t *testing.T) {
 	child, err := storage.GetItemByID(childID)
 	assert.NoError(t, err)
 	child.SetParent(root)
+	assert.Equal(t, "/home/user/testdir/file.txt", child.GetPath())
+}
+
+func TestSqliteItemGetPathLazy(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	storage, err := NewSqliteStorage(dbPath)
+	assert.NoError(t, err)
+	defer storage.Close()
+
+	// Set up metadata for path resolution
+	err = storage.SetMetadata("top_dir_path", "/home/user/testdir")
+	assert.NoError(t, err)
+
+	// Insert root
+	rootID, err := storage.InsertItem(nil, "testdir", true, 0, 0, time.Now(), 1, 0, ' ')
+	assert.NoError(t, err)
+
+	// Insert child
+	childID, err := storage.InsertItem(&rootID, "file.txt", false, 100, 4096, time.Now(), 1, 0, ' ')
+	assert.NoError(t, err)
+
+	// Get child without explicitly loading parent
+	child, err := storage.GetItemByID(childID)
+	assert.NoError(t, err)
+
+	// GetPath should lazy load parent and reconstruct correct path
 	assert.Equal(t, "/home/user/testdir/file.txt", child.GetPath())
 }
 
@@ -641,14 +668,14 @@ func TestSqliteAnalyzerSetFileTypeFilter(t *testing.T) {
 	assert.NotNil(t, analyzer.ignoreFileType)
 }
 
-func TestSqliteAnalyzerGetProgressChan(t *testing.T) {
+func TestSqliteAnalyzerGetProgress(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	analyzer, err := CreateSqliteAnalyzer(dbPath)
 	assert.NoError(t, err)
 	defer analyzer.storage.Close()
 
-	progressChan := analyzer.GetProgressChan()
-	assert.NotNil(t, progressChan)
+	progress := analyzer.GetProgress()
+	assert.Equal(t, int64(0), progress.ItemCount)
 }
 
 func TestSqliteAnalyzerGetDone(t *testing.T) {
@@ -661,6 +688,52 @@ func TestSqliteAnalyzerGetDone(t *testing.T) {
 	assert.NotNil(t, doneChan)
 }
 
+func TestSqliteAnalyzerArchiveBrowsing(t *testing.T) {
+	fin := testdir.CreateTestDir()
+	defer fin()
+
+	// Create a zip file
+	err := runInBash("zip -r test_dir/test.zip test_dir/nested")
+	if err != nil {
+		t.Skip("zip command not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	analyzer, err := CreateSqliteAnalyzer(dbPath)
+	assert.NoError(t, err)
+	defer analyzer.storage.Close()
+
+	analyzer.SetArchiveBrowsing(true)
+
+	dir := analyzer.AnalyzeDir(
+		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
+	).(*SqliteItem)
+
+	analyzer.GetDone().Wait()
+
+	// Find the zip file in the results
+	files := slices.Collect(dir.GetFiles(fs.SortByName, fs.SortAsc))
+	var zipItem *SqliteItem
+	for _, f := range files {
+		if f.GetName() == "test.zip" {
+			zipItem = f.(*SqliteItem)
+			break
+		}
+	}
+
+	assert.NotNil(t, zipItem)
+	assert.True(t, zipItem.IsDir()) // It should be treated as a directory
+
+	// Check zip contents
+	zipFiles := slices.Collect(zipItem.GetFiles(fs.SortByName, fs.SortAsc))
+	assert.NotEmpty(t, zipFiles)
+}
+
+func runInBash(cmd string) error {
+	const shell = "/bin/bash"
+	return exec.Command(shell, "-c", cmd).Run()
+}
+
 func TestSqliteAnalyzerResetProgress(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	analyzer, err := CreateSqliteAnalyzer(dbPath)
@@ -668,8 +741,6 @@ func TestSqliteAnalyzerResetProgress(t *testing.T) {
 	defer analyzer.storage.Close()
 
 	analyzer.ResetProgress()
-	assert.NotNil(t, analyzer.progress)
-	assert.NotNil(t, analyzer.progressChan)
 	assert.NotNil(t, analyzer.progressOutChan)
 	assert.NotNil(t, analyzer.doneChan)
 }
@@ -937,13 +1008,11 @@ func TestSqliteAnalyzerProgress(t *testing.T) {
 		)
 	}()
 
-	// Receive at least one progress update
-	select {
-	case progress := <-analyzer.GetProgressChan():
-		assert.GreaterOrEqual(t, progress.TotalSize, int64(0))
-	case <-time.After(5 * time.Second):
-		t.Fatal("Timeout waiting for progress")
-	}
+	// Wait for analysis to make some progress
+	time.Sleep(200 * time.Millisecond)
+
+	progress := analyzer.GetProgress()
+	assert.GreaterOrEqual(t, progress.TotalUsage, int64(0))
 
 	analyzer.GetDone().Wait()
 }

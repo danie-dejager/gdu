@@ -60,7 +60,7 @@ func CreateStdoutUI(
 			ShowProgress:     showProgress,
 			ShowApparentSize: showApparentSize,
 			ShowRelativeSize: showRelativeSize,
-			Analyzer:         analyze.CreateAnalyzer(),
+			Analyzer:         analyze.CreateTopDirAnalyzer(),
 			UseSIPrefix:      useSIPrefix,
 		},
 		output:      output,
@@ -76,6 +76,10 @@ func CreateStdoutUI(
 	ui.red = color.New(color.FgRed).Add(color.Bold)
 	ui.orange = color.New(color.FgYellow).Add(color.Bold)
 	ui.blue = color.New(color.FgBlue).Add(color.Bold)
+
+	if ui.top > 0 || ui.depth > 0 {
+		ui.Analyzer = analyze.CreateAnalyzer()
+	}
 
 	if !useColors {
 		color.NoColor = true
@@ -477,29 +481,21 @@ func (ui *UI) updateProgress(updateStatsDone <-chan struct{}) {
 		emptyRow += " "
 	}
 
-	progressChan := ui.Analyzer.GetProgressChan()
 	analysisDoneChan := ui.Analyzer.GetDone()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
-
-	var progress common.CurrentProgress
 
 	i := 0
 	for {
 		select {
 		case <-ticker.C:
-			select {
-			case progress = <-progressChan:
-				fmt.Fprint(ui.output, emptyRow)
-				fmt.Fprintf(ui.output, "\r %s ", string(progressRunes[i]))
-				fmt.Fprint(ui.output, "Scanning... Total items: "+
-					ui.red.Sprint(common.FormatNumber(int64(progress.ItemCount)))+
-					" size: "+
-					ui.formatSize(progress.TotalSize))
-			default:
-				// Update only the spinner without clearing the line
-				fmt.Fprintf(ui.output, "\r %s ", string(progressRunes[i]))
-			}
+			progress := ui.Analyzer.GetProgress()
+			fmt.Fprint(ui.output, emptyRow)
+			fmt.Fprintf(ui.output, "\r %s ", string(progressRunes[i]))
+			fmt.Fprint(ui.output, "Scanning... Total items: "+
+				ui.red.Sprint(common.FormatNumber(int64(progress.ItemCount)))+
+				" size: "+
+				ui.formatSize(progress.TotalUsage))
 			i++
 			i %= progressRunesCount
 		case <-analysisDoneChan:
