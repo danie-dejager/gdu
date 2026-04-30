@@ -129,7 +129,7 @@ benchmark:
 		'gdu -npc ~' \
 		'gdu -npc --db=tmp.badger ~' \
 		'gdu -npc --db=tmp.db ~' \
-		'GOMAXPROCS=100 gdu -npc ~'
+		'GOMAXPROCS=80 gdu -npc ~'
 	hyperfine --export-markdown=docs/benchmarks/bench-warm.md \
 		--warmup 5 \
 		--ignore-failure \
@@ -157,7 +157,7 @@ benchmark-parameter-scan:
 	hyperfine --export-markdown=docs/benchmarks/bench-warm-param-scan.md \
 		--warmup 5 \
 		--ignore-failure \
-		-P procs 1 20 \
+ 		-P procs 90 200 -D 10 \
 		'GOMAXPROCS={procs} gdu -npc ~'
 	hyperfine -M 1 --export-markdown=docs/benchmarks/bench-cold-big-param-scan.md \
 		--prepare 'sync; echo 3 | sudo tee /proc/sys/vm/drop_caches' \
