@@ -1,5 +1,5 @@
 Name:           gdu
-Version:        5.36.0
+Version:        5.36.1
 Release:        1
 Summary:        Pretty fast disk usage analyzer written in Go
 
@@ -52,6 +52,7 @@ install -Dpm 0755 %{name}.1 $RPM_BUILD_ROOT%{_mandir}/man1/gdu.1
 %{_mandir}/man1/gdu.1.gz
 
 %changelog
+* Thu Apr 30 2026 - Danie de Jager - 5.36.1-1
 * Wed Apr 29 2026 - Danie de Jager - 5.36.0-1
 * Thu Apr 1 2026 - Danie de Jager - 5.35.0-1
 * Sat Mar 21 2026 - Danie de Jager - 5.34.2-1
