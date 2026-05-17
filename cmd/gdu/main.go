@@ -19,6 +19,11 @@ import (
 	"github.com/dundee/gdu/v5/pkg/device"
 )
 
+const (
+	osWindows = "windows"
+	osPlan9   = "plan9"
+)
+
 var (
 	af        *app.Flags
 	configErr error
@@ -109,15 +114,33 @@ func init() {
 	setDefaults()
 }
 
-func initConfig() {
-	setConfigFilePath()
-	data, err := os.ReadFile(af.CfgFile)
+var systemConfigPath = "/etc/gdu.yaml"
+
+func loadConfig(path string) error {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		configErr = err
-		return // config file does not exist, return
+		return err
+	}
+	return yaml.Unmarshal(data, &af)
+}
+
+func initConfig() {
+	// Load system-wide config first (ignored on Windows/Plan9 and when absent).
+	if runtime.GOOS != osWindows && runtime.GOOS != osPlan9 {
+		if err := loadConfig(systemConfigPath); err != nil && !os.IsNotExist(err) {
+			configErr = err
+			return
+		}
 	}
 
-	configErr = yaml.Unmarshal(data, &af)
+	// Load user config; its values overwrite whatever the system config set.
+	setConfigFilePath()
+	if err := loadConfig(af.CfgFile); err != nil {
+		if !os.IsNotExist(err) {
+			configErr = err
+		}
+		return
+	}
 }
 
 func setDefaults() {
@@ -195,7 +218,7 @@ func runE(command *cobra.Command, args []string) error {
 		}
 	}
 
-	if runtime.GOOS == "windows" && af.LogFile == "/dev/null" {
+	if runtime.GOOS == osWindows && af.LogFile == "/dev/null" {
 		af.LogFile = "nul"
 	}
 
@@ -223,7 +246,7 @@ func runE(command *cobra.Command, args []string) error {
 	istty := isatty.IsTerminal(os.Stdout.Fd())
 
 	// we are not able to analyze disk usage on Windows and Plan9
-	if runtime.GOOS == "windows" || runtime.GOOS == "plan9" {
+	if runtime.GOOS == osWindows || runtime.GOOS == osPlan9 {
 		af.ShowApparentSize = true
 	}
 
