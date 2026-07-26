@@ -30,7 +30,7 @@ var (
                [::b]c     [white:black:-]Show/hide file count
                [::b]m     [white:black:-]Show/hide latest mtime
                [::b]b     [white:black:-]Spawn shell in current directory
-               [::b]q     [white:black:-]Quit gdu
+               [::b]q     [white:black:-]Quit gdu (asks to confirm after a long scan)
                [::b]Q     [white:black:-]Quit gdu and print current directory path
 
 Item under cursor:
@@ -49,6 +49,20 @@ Sort by (twice toggles asc/desc):
                [::b]C     [white:black:-]Sort by file count (asc/desc)
                [::b]M     [white:black:-]Sort by mtime (asc/desc)`
 )
+
+// currentDirLabelText builds the breadcrumb label shown above the table,
+// annotated when a mid-scan preview is being displayed.
+func (ui *UI) currentDirLabelText() string {
+	label := "[::b] --- " +
+		tview.Escape(
+			strings.TrimPrefix(ui.currentDirPath, build.RootPathPrefix),
+		) +
+		" ---"
+	if ui.previewing {
+		label += "  [::b][yellow]scanning… (preview, Tab to resume)[-]"
+	}
+	return label
+}
 
 // nolint: funlen // Why: complex function
 func (ui *UI) showDir() {
@@ -70,11 +84,7 @@ func (ui *UI) showDir() {
 		log.Printf("changing cwd to %s", ui.currentDirPath)
 	}
 
-	ui.currentDirLabel.SetText("[::b] --- " +
-		tview.Escape(
-			strings.TrimPrefix(ui.currentDirPath, build.RootPathPrefix),
-		) +
-		" ---").SetDynamicColors(true)
+	ui.currentDirLabel.SetText(ui.currentDirLabelText()).SetDynamicColors(true)
 
 	ui.table.Clear()
 

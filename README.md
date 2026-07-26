@@ -60,6 +60,7 @@ Flags:
       --min-age string                Include files with mtime at least DURATION old (e.g., 30d, 1w)
       --mouse                         Use mouse
   -c, --no-color                      Do not use colorized output
+      --no-confirm-quit               Do not ask for confirmation before quitting after a long scan
   -x, --no-cross                      Do not cross filesystem boundaries
       --no-delete                     Do not allow deletions
   -H, --no-hidden                     Ignore hidden directories (beginning with dot)
@@ -142,6 +143,8 @@ This means memory usage stays constant regardless of how large the scanned direc
 When `--top` or `--depth` flags are used, the full directory tree is built in memory as in interactive mode.
 
 Export mode (flag `-o`) outputs all usage data as JSON, which can be later opened using the `-f` flag.
+
+Gdu honors `BLOCK_SIZE` and `BLOCKSIZE` in terminal output. `BLOCK_SIZE` takes precedence; both accept GNU coreutils block-size values such as `1K`, `kB`, `human-readable`, and `si`. Explicit size-format flags override these environment variables. Exported JSON always retains raw byte values.
 
 Hard links are counted only once.
 

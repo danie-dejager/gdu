@@ -98,6 +98,13 @@ type UI struct {
 	browseParentDirs        bool
 	showDiskProgressBar     bool
 	currentDeviceSize       int64
+	confirmQuit             bool
+	scanning                bool
+	scanStart               time.Time
+	scanDuration            time.Duration
+	previewing              bool
+	previewSavedDir         fs.Item
+	progressFlex            *tview.Flex
 }
 
 type deleteQueueItem struct {
@@ -137,6 +144,7 @@ func CreateUI(
 		screen:                  screen,
 		output:                  output,
 		askBeforeDelete:         true,
+		confirmQuit:             true,
 		showItemCount:           false,
 		remover:                 remove.ItemFromDir,
 		emptier:                 remove.EmptyFileFromDir,
@@ -157,6 +165,9 @@ func CreateUI(
 		noSpawnShell:            false,
 		deleteQueue:             make(chan deleteQueueItem, 1000),
 		deleteWorkersCount:      3 * runtime.GOMAXPROCS(0),
+	}
+	if !useSIPrefix {
+		ui.SetBlockSizeFromEnvironment()
 	}
 	for _, o := range opts {
 		o(ui)
@@ -343,6 +354,12 @@ func (ui *UI) StartUILoop() error {
 	return ui.app.Run()
 }
 
+// SetConfirmQuit sets whether gdu asks for confirmation before quitting
+// after a scan that took a noticeable amount of time
+func (ui *UI) SetConfirmQuit(value bool) {
+	ui.confirmQuit = value
+}
+
 // SetShowItemCount sets the flag to show number of items in directory
 func (ui *UI) SetShowItemCount() {
 	ui.showItemCount = true
@@ -435,6 +452,12 @@ func (ui *UI) fileItemSelected(row, column int) {
 	ui.markedRows = make(map[int]struct{})
 	ui.ignoredRows = make(map[int]struct{})
 	ui.showDir()
+
+	// while previewing a mid-scan snapshot there is no stable top dir to anchor
+	// the "select last visited" logic to, so just render the navigated dir
+	if ui.previewing {
+		return
+	}
 
 	if row != 0 || origDir.GetPath() == ui.topDir.GetPath() {
 		return
