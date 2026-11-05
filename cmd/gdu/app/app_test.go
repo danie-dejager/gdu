@@ -147,6 +147,21 @@ func TestShowAnnexedSize(t *testing.T) {
 	assert.Nil(t, err)
 }
 
+func TestExclusiveSize(t *testing.T) {
+	fin := testdir.CreateTestDir()
+	defer fin()
+
+	out, err := runApp(
+		&Flags{LogFile: "/dev/null", ExclusiveSize: true},
+		[]string{"test_dir"},
+		false,
+		testdev.DevicesInfoGetterMock{},
+	)
+
+	assert.Contains(t, out, "nested")
+	assert.Nil(t, err)
+}
+
 func TestAnalyzePathProfiling(t *testing.T) {
 	fin := testdir.CreateTestDir()
 	defer fin()
@@ -1019,9 +1034,11 @@ func (m *uiTimeFilterMock) SetIgnoreDirPaths(paths []string)                  {}
 func (m *uiTimeFilterMock) SetIgnoreDirPatterns(paths []string) error         { return nil }
 func (m *uiTimeFilterMock) SetIgnoreFromFile(ignoreFile string) error         { return nil }
 func (m *uiTimeFilterMock) SetIgnoreHidden(value bool)                        {}
+func (m *uiTimeFilterMock) SetIgnoreOtherFilesystems(value bool)              {}
 func (m *uiTimeFilterMock) SetIncludeTypes(types []string)                    {}
 func (m *uiTimeFilterMock) SetFollowSymlinks(value bool)                      {}
 func (m *uiTimeFilterMock) SetShowAnnexedSize(value bool)                     {}
+func (m *uiTimeFilterMock) SetExclusiveSize(value bool)                       {}
 func (m *uiTimeFilterMock) SetAnalyzer(analyzer common.Analyzer)              {}
 func (m *uiTimeFilterMock) SetIgnoreFromGitignoreFile(ignoreFile string, scanRoots []string) error {
 	return nil

@@ -145,6 +145,10 @@ By default, `Ctrl+C` during a scan produces a stopped scan: no new work is sched
 
 Follow symlinks for files, i.e. show the size of the file to which symlink points to (symlinks to directories are not followed)
 
+#### `exclusive-size`
+
+Linux only: report disk usage of files as the bytes not shared with other files through reflinks, i.e. what deleting them would free. Falls back to allocated blocks where the filesystem cannot report extents. Ignored on other platforms. See [Reflinks and shared extents](README.md#reflinks-and-shared-extents).
+
 #### `profiling`
 
 Enable collection of profiling data and provide it on http://localhost:6060/debug/pprof/
@@ -167,7 +171,7 @@ Show sizes as raw numbers without any prefixes (SI or binary) in non-interactive
 
 #### `reverse-sort`
 
-Reverse sorting order (smallest to largest) in non-interactive mode
+Reverse the sorting order in non-interactive mode (smallest to largest by default)
 
 #### `change-cwd`
 
@@ -355,8 +359,14 @@ Sort items. Possible values:
 * itemCount - number of items contained in the folder tree (the same number shown by `show-item-count`)
 * mtime - modification time
 
+Applies to interactive listings and non-interactive listings, including `--depth`.
+`--top` keeps selecting the largest files by the displayed size metric.
+
 #### `sorting.order`
 
 Set sorting order. Possible values:
 * asc - ascending order
 * desc - descending order
+
+In non-interactive mode, `--reverse-sort` reverses the configured order. With no
+configured order, the default remains largest first.

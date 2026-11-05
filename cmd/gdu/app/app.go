@@ -46,9 +46,11 @@ type UI interface {
 	SetIgnoreFromFile(ignoreFile string) error
 	SetIgnoreFromGitignoreFile(ignoreFile string, scanRoots []string) error
 	SetIgnoreHidden(value bool)
+	SetIgnoreOtherFilesystems(value bool)
 	SetIncludeTypes(types []string)
 	SetFollowSymlinks(value bool)
 	SetShowAnnexedSize(value bool)
+	SetExclusiveSize(value bool)
 	SetAnalyzer(analyzer common.Analyzer)
 	SetTimeFilter(timeFilter common.TimeFilter)
 	SetArchiveBrowsing(value bool)
@@ -80,6 +82,7 @@ type Flags struct {
 	ShowApparentSize    bool      `yaml:"show-apparent-size"`
 	ShowRelativeSize    bool      `yaml:"show-relative-size"`
 	ShowAnnexedSize     bool      `yaml:"show-annexed-size"`
+	ExclusiveSize       bool      `yaml:"exclusive-size"`
 	ShowVersion         bool      `yaml:"-"`
 	ShowItemCount       bool      `yaml:"show-item-count"`
 	ShowMTime           bool      `yaml:"show-mtime"`
@@ -301,6 +304,9 @@ func (a *App) Run() error {
 	if a.Flags.ShowAnnexedSize {
 		ui.SetShowAnnexedSize(true)
 	}
+	if a.Flags.ExclusiveSize {
+		ui.SetExclusiveSize(true)
+	}
 	if a.Flags.ArchiveBrowsing {
 		ui.SetArchiveBrowsing(true)
 	}
@@ -352,6 +358,9 @@ func (a *App) Run() error {
 
 	if a.Flags.NoHidden {
 		ui.SetIgnoreHidden(true)
+	}
+	if a.Flags.NoCross {
+		ui.SetIgnoreOtherFilesystems(true)
 	}
 
 	a.setMaxProcs()
@@ -544,6 +553,8 @@ func (a *App) createUI(outputAttributes gfs.JSONAttributes) (UI, error) {
 			a.Flags.ReverseSort,
 			a.Flags.Depth,
 		)
+		stdoutUI.SetDefaultSorting(a.Flags.Sorting.By, a.Flags.Sorting.Order)
+
 		if a.Flags.NoUnicode {
 			stdoutUI.UseOldProgressRunes()
 		}
