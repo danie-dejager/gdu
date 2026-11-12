@@ -2,6 +2,7 @@ package analyze
 
 import (
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -19,7 +20,7 @@ type BaseAnalyzer struct {
 	currentDir              atomic.Value
 	doneChan                common.SignalGroup
 	cancelled               atomic.Bool
-	wait                    *WaitGroup
+	wait                    *sync.WaitGroup
 	ignoreDir               common.ShouldDirBeIgnored
 	ignoreFileType          common.ShouldFileBeIgnored
 	followSymlinks          bool
@@ -35,7 +36,7 @@ func (a *BaseAnalyzer) Init() {
 	a.progressOutChan = make(chan common.CurrentProgress, 1)
 	a.progressDoneChan = make(chan struct{})
 	a.doneChan = make(common.SignalGroup)
-	a.wait = (&WaitGroup{}).Init()
+	a.wait = &sync.WaitGroup{}
 	a.progressItemCount.Store(0)
 	a.progressTotalUsage.Store(0)
 	a.progressCurrentItemName.Store("")
@@ -72,7 +73,8 @@ func (a *BaseAnalyzer) SetShowAnnexedSize(v bool) {
 }
 
 // SetExclusiveSize sets whether disk usage of files is the number of bytes not
-// shared with other files (Linux only, measured with FIEMAP)
+// shared with other files (Linux and macOS only, measured with FIEMAP and
+// getattrlist respectively)
 func (a *BaseAnalyzer) SetExclusiveSize(v bool) {
 	switch {
 	case !v:
@@ -83,7 +85,7 @@ func (a *BaseAnalyzer) SetExclusiveSize(v bool) {
 }
 
 // MeasureSharedUsage returns the disk usage to record for a file and the bytes
-// in its shared extents. With exclusive size off, or when the file cannot be
+// it shares with other files. With exclusive size off, or when the file cannot be
 // measured, that is the given st_blocks based usage with nothing shared.
 func (a *BaseAnalyzer) MeasureSharedUsage(path string, info os.FileInfo, usage int64) (exclusive, shared int64) {
 	if a.extents == nil {
