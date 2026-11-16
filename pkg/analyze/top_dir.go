@@ -3,49 +3,12 @@ package analyze
 import (
 	"io"
 	"iter"
-	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/pkg/fs"
 )
 
-var _ fs.Item = (*SimpleDir)(nil)
-
-type TopDir struct {
-	Name      string
-	Mtime     time.Time
-	Size      atomic.Int64
-	Usage     atomic.Int64
-	ItemCount atomic.Int64
-	Flag      rune
-	m         sync.Mutex
-}
-
-func (d *TopDir) AddUsage(size, usage, itemCount int64) {
-	d.Size.Add(size)
-	d.Usage.Add(usage)
-	d.ItemCount.Add(itemCount)
-}
-
-func (d *TopDir) GetUsage() (size, usage, itemCount int64) {
-	return d.Size.Load(), d.Usage.Load(), d.ItemCount.Load()
-}
-
-func (d *TopDir) SetFlag(flag rune) {
-	d.m.Lock()
-	d.Flag = flag
-	d.m.Unlock()
-}
-
-// UpdateMtime keeps the newest mtime seen in the directory tree, like Dir does.
-func (d *TopDir) UpdateMtime(mtime time.Time) {
-	d.m.Lock()
-	if mtime.After(d.Mtime) {
-		d.Mtime = mtime
-	}
-	d.m.Unlock()
-}
+var _ treeItem = (*SimpleDir)(nil)
 
 type SimpleFile struct {
 	Name      string
@@ -62,6 +25,8 @@ type SimpleFile struct {
 	alreadyCounted bool
 }
 
+// SimpleDir is the directory the top-dir analyzer returns: only its entries
+// are kept, each with the totals of its own tree.
 type SimpleDir struct {
 	SimpleFile
 	Files    []SimpleFile
@@ -69,6 +34,7 @@ type SimpleDir struct {
 	// OwnUsage is the disk usage of the blocks allocated to the directory
 	// itself, excluding its entries.
 	OwnUsage int64
+	parent   fs.Item
 }
 
 func (d *SimpleDir) GetName() string {
@@ -91,36 +57,57 @@ func (d *SimpleDir) GetPath() string {
 	return d.BasePath + pathSep + d.Name
 }
 
-func (d *SimpleDir) GetFlag() rune                                       { panic("not implemented") }
-func (d *SimpleDir) GetType() string                                     { panic("not implemented") }
-func (d *SimpleDir) GetMtime() time.Time                                 { panic("not implemented") }
-func (d *SimpleDir) GetItemCount() int64                                 { panic("not implemented") }
-func (d *SimpleDir) GetParent() fs.Item                                  { panic("not implemented") }
-func (d *SimpleDir) SetParent(parent fs.Item)                            { panic("not implemented") }
-func (d *SimpleDir) GetMultiLinkedInode() uint64                         { panic("not implemented") }
-func (d *SimpleDir) EncodeJSON(io.Writer, bool, fs.JSONAttributes) error { panic("not implemented") }
-func (d *SimpleDir) GetItemStats(linkedItems fs.HardLinkedItems, filteringFiles bool) (itemCount, size, usage int64) {
-	panic("not implemented")
+func (d *SimpleDir) GetFlag() rune               { return d.Flag }
+func (d *SimpleDir) GetType() string             { return dirType }
+func (d *SimpleDir) GetMtime() time.Time         { return d.Mtime }
+func (d *SimpleDir) GetItemCount() int64         { return d.ItemCount }
+func (d *SimpleDir) GetParent() fs.Item          { return d.parent }
+func (d *SimpleDir) SetParent(parent fs.Item)    { d.parent = parent }
+func (d *SimpleDir) GetMultiLinkedInode() uint64 { return 0 }
+
+// EncodeJSON writes the directory and its entries in the format of ncdu's
+// export.
+func (d *SimpleDir) EncodeJSON(writer io.Writer, topLevel bool, attributes fs.JSONAttributes) error {
+	dir := &Dir{
+		File: &File{
+			Name:   d.Name,
+			Mtime:  d.Mtime,
+			Flag:   d.Flag,
+			Size:   d.Size,
+			Usage:  d.Usage,
+			Parent: d.parent,
+		},
+		BasePath:  d.BasePath,
+		ItemCount: d.ItemCount,
+		OwnUsage:  d.OwnUsage,
+	}
+	dir.Files = d.entries(dir)
+	return dir.EncodeJSON(writer, topLevel, attributes)
 }
 
-func (d *SimpleDir) UpdateStats(linkedItems fs.HardLinkedItems) {
-	d.updateStats(linkedItems, false)
+func (d *SimpleDir) itemStats(_ *fs.HardLinks, filteringFiles bool) (itemCount, size, usage int64) {
+	d.updateStats(filteringFiles)
+	return d.ItemCount, d.Size, d.Usage
 }
 
-func (d *SimpleDir) UpdateStatsWithFileFiltering(linkedItems fs.HardLinkedItems) {
-	d.updateStats(linkedItems, true)
+// UpdateStats computes the totals of the directory from its entries. Hard
+// links are counted once during the scan, so there is no index to return.
+func (d *SimpleDir) UpdateStats(filteringFiles bool) *fs.HardLinks {
+	d.updateStats(filteringFiles)
+	return nil
 }
 
-func (d *SimpleDir) updateStats(_ fs.HardLinkedItems, _ bool) {
-	var totalSize int64
-	var totalUsage int64
-	var itemCount int64
+func (d *SimpleDir) updateStats(filteringFiles bool) {
+	totals := dirTotals{itemCount: 1, ownUsage: d.OwnUsage, entries: len(d.Files)}
 	for _, entry := range d.Files {
 		if !entry.alreadyCounted {
-			totalSize += entry.Size
-			totalUsage += entry.Usage
+			totals.size += entry.Size
+			totals.usage += entry.Usage
 		}
-		itemCount += entry.ItemCount
+		totals.itemCount += entry.ItemCount
+		if !entry.IsDir {
+			totals.hasFiles = true
+		}
 
 		switch entry.Flag {
 		case '!', '.':
@@ -129,43 +116,12 @@ func (d *SimpleDir) updateStats(_ fs.HardLinkedItems, _ bool) {
 			}
 		}
 	}
-	if len(d.Files) == 0 {
-		d.ItemCount = 0
-		d.Size = EmptyDirSize
-		d.Usage = d.OwnUsage
-	} else {
-		d.ItemCount = itemCount + 1
-		d.Size = totalSize
-		d.Usage = totalUsage + d.OwnUsage
-	}
+	d.ItemCount, d.Size, d.Usage = resolveDirStats(totals, filteringFiles)
 }
-func (d *SimpleDir) AddFile(fs.Item) { panic("not implemented") }
+
 func (d *SimpleDir) GetFiles(sortBy fs.SortBy, order fs.SortOrder) iter.Seq[fs.Item] {
 	return func(yield func(fs.Item) bool) {
-		// Make a copy to avoid modifying the original slice
-		sorted := make(fs.Files, 0, len(d.Files))
-
-		for _, file := range d.Files {
-			f := &File{
-				Name:    file.Name,
-				Mtime:   file.Mtime,
-				Flag:    file.Flag,
-				Size:    file.Size,
-				Usage:   file.Usage,
-				Parent:  d,
-				Symlink: file.Symlink,
-			}
-
-			if file.IsDir {
-				sorted = append(sorted, &Dir{
-					File:      f,
-					ItemCount: file.ItemCount,
-				})
-			} else {
-				sorted = append(sorted, f)
-			}
-		}
-
+		sorted := d.entries(d)
 		sortFiles(sorted, sortBy, order)
 
 		for _, item := range sorted {
@@ -175,9 +131,29 @@ func (d *SimpleDir) GetFiles(sortBy fs.SortBy, order fs.SortOrder) iter.Seq[fs.I
 		}
 	}
 }
-func (d *SimpleDir) GetFilesLocked(fs.SortBy, fs.SortOrder) iter.Seq[fs.Item] {
-	panic("not implemented")
+
+// entries returns the entries of the directory as items held by parent.
+func (d *SimpleDir) entries(parent fs.Item) fs.Files {
+	entries := make(fs.Files, 0, len(d.Files))
+	for _, file := range d.Files {
+		f := &File{
+			Name:    file.Name,
+			Mtime:   file.Mtime,
+			Flag:    file.Flag,
+			Size:    file.Size,
+			Usage:   file.Usage,
+			Parent:  parent,
+			Symlink: file.Symlink,
+		}
+
+		if file.IsDir {
+			entries = append(entries, &Dir{
+				File:      f,
+				ItemCount: file.ItemCount,
+			})
+		} else {
+			entries = append(entries, f)
+		}
+	}
+	return entries
 }
-func (d *SimpleDir) RemoveFile(fs.Item)           { panic("not implemented") }
-func (d *SimpleDir) RemoveFileByName(name string) { panic("not implemented") }
-func (d *SimpleDir) RLock() func()                { panic("not implemented") }

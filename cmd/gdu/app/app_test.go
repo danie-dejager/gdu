@@ -4,30 +4,28 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
 
-	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 
-	"github.com/dundee/gdu/v5/internal/common"
-	"github.com/dundee/gdu/v5/internal/testapp"
-	"github.com/dundee/gdu/v5/internal/testdev"
-	"github.com/dundee/gdu/v5/internal/testdir"
-	"github.com/dundee/gdu/v5/pkg/cleanup"
-	"github.com/dundee/gdu/v5/pkg/device"
-	gfs "github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/internal/cleanup"
+	"github.com/dundee/gdu/v6/internal/testapp"
+	"github.com/dundee/gdu/v6/internal/testdev"
+	"github.com/dundee/gdu/v6/internal/testdir"
+	"github.com/dundee/gdu/v6/pkg/device"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func init() {
-	log.SetLevel(log.WarnLevel)
+	slog.SetLogLoggerLevel(slog.LevelWarn)
 }
 
 func TestVersion(t *testing.T) {
@@ -671,7 +669,8 @@ func assertOutputAttributes(t *testing.T, value any) {
 	case map[string]any:
 		assert.Contains(t, value, "name")
 		for attribute := range value {
-			assert.Contains(t, []string{"name", "asize", "dsize"}, attribute)
+			// a directory's totals go under gdu_asize and gdu_dsize
+			assert.Contains(t, []string{"name", "asize", "dsize", "gdu_asize", "gdu_dsize"}, attribute)
 		}
 	default:
 		t.Fatalf("unexpected JSON value %T", value)
@@ -747,7 +746,7 @@ func TestAnalyzePathWithExportAndDepth(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Contains(t, string(content), `"name":"nested"`)
 	assert.NotContains(t, string(content), `"name":"subnested"`)
-	assert.Contains(t, string(content), `"name":"nested","asize":`)
+	assert.Regexp(t, `"name":"nested",("dsize":\d+,)?"gdu_asize":`, string(content))
 	assert.Contains(t, string(content), `"items":`)
 }
 
@@ -852,6 +851,7 @@ func TestAnalyzePathWithErr(t *testing.T) {
 		Args:        []string{"xxx"},
 		Istty:       false,
 		Writer:      buff,
+		ErrWriter:   io.Discard,
 		TermApp:     testapp.CreateMockedApp(false),
 		Getter:      testdev.DevicesInfoGetterMock{},
 		PathChecker: os.Stat,
@@ -912,7 +912,7 @@ func TestWebFlagRejectsInvalidCleanupRule(t *testing.T) {
 		&Flags{
 			LogFile: "/dev/null",
 			Web:     true,
-			Cleanup: cleanup.Config{Rules: []cleanup.Rule{{Category: "junk", Dir: "x"}}},
+			Cleanup: CleanupConfig{Rules: []CleanupRule{{Category: "junk", Dir: "x"}}},
 		},
 		[]string{"test_dir"},
 		false,
@@ -949,7 +949,7 @@ cleanup:
 			Category: cleanup.BuildArtifact, Confidence: cleanup.Safe,
 			Dir: ".gradle", Markers: []string{"build.gradle"},
 		}},
-	}, f.Cleanup)
+	}, f.Cleanup.config())
 }
 
 func TestListDevices(t *testing.T) {
@@ -982,7 +982,7 @@ func TestListDevicesToFile(t *testing.T) {
 	)
 
 	assert.Equal(t, "", out)
-	assert.Contains(t, err.Error(), "not supported")
+	assert.ErrorContains(t, err, "--output-file and --show-disks cannot be used at once")
 }
 
 func TestListDevicesWithGui(t *testing.T) {
@@ -1000,101 +1000,24 @@ func TestListDevicesWithGui(t *testing.T) {
 	assert.Empty(t, out)
 }
 
-func TestMaxCores(t *testing.T) {
-	_, err := runApp(
-		&Flags{LogFile: "/dev/null", MaxCores: 1},
-		[]string{},
-		true,
-		testdev.DevicesInfoGetterMock{},
-	)
-
-	assert.Equal(t, 1, runtime.GOMAXPROCS(0))
-	assert.Nil(t, err)
-}
-
-func TestMaxCoresHighEdge(t *testing.T) {
-	if runtime.NumCPU() < 2 {
-		t.Skip("Skipping on a single core CPU")
-	}
-	out, err := runApp(
-		&Flags{LogFile: "/dev/null", MaxCores: runtime.NumCPU() + 1},
-		[]string{},
-		true,
-		testdev.DevicesInfoGetterMock{},
-	)
-
-	assert.NotEqual(t, runtime.NumCPU(), runtime.GOMAXPROCS(0))
-	assert.Empty(t, out)
-	assert.Nil(t, err)
-}
-
-func TestMaxCoresLowEdge(t *testing.T) {
-	if runtime.NumCPU() < 2 {
-		t.Skip("Skipping on a single core CPU")
-	}
-	out, err := runApp(
-		&Flags{LogFile: "/dev/null", MaxCores: -100},
-		[]string{},
-		true,
-		testdev.DevicesInfoGetterMock{},
-	)
-
-	assert.NotEqual(t, runtime.NumCPU(), runtime.GOMAXPROCS(0))
-	assert.Empty(t, out)
-	assert.Nil(t, err)
-}
-
-type uiTimeFilterMock struct {
-	timeFilter common.TimeFilter
-}
-
-func (m *uiTimeFilterMock) ListDevices(getter device.DevicesInfoGetter) error { return nil }
-func (m *uiTimeFilterMock) AnalyzePath(path string, parentDir gfs.Item) error { return nil }
-func (m *uiTimeFilterMock) AnalyzePaths(paths []string) error                 { return nil }
-func (m *uiTimeFilterMock) ReadAnalysis(input io.Reader) error                { return nil }
-func (m *uiTimeFilterMock) ReadFromStorage(storagePath, path string) error    { return nil }
-func (m *uiTimeFilterMock) SetIgnoreTypes(types []string)                     {}
-func (m *uiTimeFilterMock) SetIgnoreDirPaths(paths []string)                  {}
-func (m *uiTimeFilterMock) SetIgnoreDirPatterns(paths []string) error         { return nil }
-func (m *uiTimeFilterMock) SetIgnoreFromFile(ignoreFile string) error         { return nil }
-func (m *uiTimeFilterMock) SetIgnoreHidden(value bool)                        {}
-func (m *uiTimeFilterMock) SetIgnoreOtherFilesystems(value bool)              {}
-func (m *uiTimeFilterMock) SetIncludeTypes(types []string)                    {}
-func (m *uiTimeFilterMock) SetFollowSymlinks(value bool)                      {}
-func (m *uiTimeFilterMock) SetShowAnnexedSize(value bool)                     {}
-func (m *uiTimeFilterMock) SetExclusiveSize(value bool)                       {}
-func (m *uiTimeFilterMock) SetAnalyzer(analyzer common.Analyzer)              {}
-func (m *uiTimeFilterMock) SetIgnoreFromGitignoreFile(ignoreFile string, scanRoots []string) error {
-	return nil
-}
-func (m *uiTimeFilterMock) SetTimeFilter(timeFilter common.TimeFilter) {
-	m.timeFilter = timeFilter
-}
-func (m *uiTimeFilterMock) SetArchiveBrowsing(value bool)   {}
-func (m *uiTimeFilterMock) SetCollapsePath(value bool)      {}
-func (m *uiTimeFilterMock) SetShowSymlinkTarget(value bool) {}
-func (m *uiTimeFilterMock) StartUILoop() error              { return nil }
-
-func TestSetTimeFiltersInvalid(t *testing.T) {
+func TestSettingsRejectInvalidTimeFilter(t *testing.T) {
 	a := &App{Flags: &Flags{Since: "not-a-date"}}
-	ui := &uiTimeFilterMock{}
 
-	err := a.setTimeFilters(ui)
+	_, err := a.settings(nil)
 
 	assert.ErrorContains(t, err, "invalid time filter")
 }
 
-func TestSetTimeFiltersSetsFilter(t *testing.T) {
+func TestSettingsResolveTimeFilter(t *testing.T) {
 	futureDate := time.Now().Add(48 * time.Hour).Format("2006-01-02")
 	a := &App{Flags: &Flags{Since: futureDate}}
-	ui := &uiTimeFilterMock{}
 
-	err := a.setTimeFilters(ui)
+	s, err := a.settings(nil)
 
-	assert.Nil(t, err)
-	if assert.NotNil(t, ui.timeFilter) {
-		assert.False(t, ui.timeFilter(time.Now()))
-		assert.True(t, ui.timeFilter(time.Now().Add(72*time.Hour)))
+	require.NoError(t, err)
+	if assert.NotNil(t, s.Scan.TimeFilter) {
+		assert.False(t, s.Scan.TimeFilter.IncludeByTimeFilter(time.Now(), s.Scan.TimeLocation))
+		assert.True(t, s.Scan.TimeFilter.IncludeByTimeFilter(time.Now().Add(72*time.Hour), s.Scan.TimeLocation))
 	}
 }
 

@@ -1,19 +1,19 @@
 package analyze
 
 import (
+	"context"
+	"log/slog"
 	"os"
 	"sort"
 	"testing"
 
-	log "github.com/sirupsen/logrus"
-
-	"github.com/dundee/gdu/v5/internal/testdir"
-	"github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/internal/testdir"
+	"github.com/dundee/gdu/v6/pkg/fs"
 	"github.com/stretchr/testify/assert"
 )
 
 func init() {
-	log.SetLevel(log.WarnLevel)
+	slog.SetLogLoggerLevel(slog.LevelWarn)
 }
 
 func TestAnalyzeDir(t *testing.T) {
@@ -21,16 +21,14 @@ func TestAnalyzeDir(t *testing.T) {
 	defer fin()
 
 	analyzer := CreateAnalyzer()
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*Dir)
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile: func(_ string) bool { return false },
+	}).(*Dir)
 
 	progress := analyzer.GetProgress()
 	assert.GreaterOrEqual(t, progress.TotalUsage, int64(0))
 
-	analyzer.GetDone().Wait()
-	analyzer.ResetProgress()
-	dir.UpdateStats(make(fs.HardLinkedItems))
+	dir.UpdateStats(false)
 
 	// test dir info
 	assert.Equal(t, "test_dir", dir.Name)
@@ -71,9 +69,10 @@ func TestIgnoreDir(t *testing.T) {
 	fin := testdir.CreateTestDir()
 	defer fin()
 
-	dir := CreateAnalyzer().AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return true }, func(_ string) bool { return false },
-	).(*Dir)
+	dir := CreateAnalyzer().AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreDir:  func(_, _ string) bool { return true },
+		IgnoreFile: func(_ string) bool { return false },
+	}).(*Dir)
 
 	assert.Equal(t, "test_dir", dir.Name)
 	assert.Equal(t, int64(1), dir.ItemCount)
@@ -90,11 +89,10 @@ func TestFlags(t *testing.T) {
 	assert.Nil(t, err)
 
 	analyzer := CreateAnalyzer()
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*Dir)
-	analyzer.GetDone().Wait()
-	dir.UpdateStats(make(fs.HardLinkedItems))
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile: func(_ string) bool { return false },
+	}).(*Dir)
+	dir.UpdateStats(false)
 
 	sort.Sort(sort.Reverse(dir.Files))
 
@@ -118,11 +116,10 @@ func TestHardlink(t *testing.T) {
 	assert.Nil(t, err)
 
 	analyzer := CreateAnalyzer()
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*Dir)
-	analyzer.GetDone().Wait()
-	dir.UpdateStats(make(fs.HardLinkedItems))
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile: func(_ string) bool { return false },
+	}).(*Dir)
+	dir.UpdateStats(false)
 
 	assert.Equal(t, int64(7), dir.Size)      // file2 and file3 are counted just once for size
 	assert.Equal(t, int64(6), dir.ItemCount) // but twice for item count
@@ -144,12 +141,11 @@ func TestFollowSymlink(t *testing.T) {
 	assert.Nil(t, err)
 
 	analyzer := CreateAnalyzer()
-	analyzer.SetFollowSymlinks(true)
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*Dir)
-	analyzer.GetDone().Wait()
-	dir.UpdateStats(make(fs.HardLinkedItems))
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile:     func(_ string) bool { return false },
+		FollowSymlinks: true,
+	}).(*Dir)
+	dir.UpdateStats(false)
 
 	sort.Sort(sort.Reverse(dir.Files))
 
@@ -180,13 +176,12 @@ func TestGitAnnexSymlink(t *testing.T) {
 	assert.Nil(t, err)
 
 	analyzer := CreateAnalyzer()
-	analyzer.SetFollowSymlinks(true)
-	analyzer.SetShowAnnexedSize(true)
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*Dir)
-	analyzer.GetDone().Wait()
-	dir.UpdateStats(make(fs.HardLinkedItems))
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile:     func(_ string) bool { return false },
+		FollowSymlinks: true,
+		AnnexedSize:    true,
+	}).(*Dir)
+	dir.UpdateStats(false)
 
 	sort.Sort(sort.Reverse(dir.Files))
 
@@ -213,12 +208,11 @@ func TestBrokenSymlinkSkipped(t *testing.T) {
 	assert.Nil(t, err)
 
 	analyzer := CreateAnalyzer()
-	analyzer.SetFollowSymlinks(true)
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*Dir)
-	analyzer.GetDone().Wait()
-	dir.UpdateStats(make(fs.HardLinkedItems))
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile:     func(_ string) bool { return false },
+		FollowSymlinks: true,
+	}).(*Dir)
+	dir.UpdateStats(false)
 
 	sort.Sort(sort.Reverse(dir.Files))
 
@@ -235,36 +229,8 @@ func BenchmarkAnalyzeDir(b *testing.B) {
 	b.ResetTimer()
 
 	analyzer := CreateAnalyzer()
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	)
-	analyzer.GetDone().Wait()
-	dir.UpdateStats(make(fs.HardLinkedItems))
-}
-
-func TestParallelStableOrderAnalyzerDeterminism(t *testing.T) {
-	fin := testdir.CreateTestDir()
-	defer fin()
-
-	// Run parallel analyzer multiple times and verify results are identical
-	var results [][]string
-	for i := 0; i < 5; i++ {
-		analyzer := CreateStableOrderAnalyzer()
-		dir := analyzer.AnalyzeDir(
-			"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-		)
-		analyzer.GetDone().Wait()
-		dir.UpdateStats(make(fs.HardLinkedItems))
-
-		names := getFileNames(dir)
-		results = append(results, names)
-	}
-
-	// All runs should produce identical results
-	for i := 1; i < len(results); i++ {
-		assert.Equal(t, results[0], results[i],
-			"Parallel analyzer run %d produced different results than run 0", i)
-	}
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{IgnoreFile: func(_ string) bool { return false }})
+	dir.UpdateStats(false)
 }
 
 func TestParallelVsSequentialConsistency(t *testing.T) {
@@ -273,73 +239,19 @@ func TestParallelVsSequentialConsistency(t *testing.T) {
 
 	// Run sequential analyzer
 	seqAnalyzer := CreateSeqAnalyzer()
-	seqDir := seqAnalyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	)
-	seqAnalyzer.GetDone().Wait()
-	seqDir.UpdateStats(make(fs.HardLinkedItems))
+	seqDir := seqAnalyzer.AnalyzeDir(context.Background(), "test_dir", Options{IgnoreFile: func(_ string) bool { return false }})
+	seqDir.UpdateStats(false)
 	seqNames := getFileNames(seqDir)
 
 	// Run parallel analyzer
-	parAnalyzer := CreateStableOrderAnalyzer()
-	parDir := parAnalyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	)
-	parAnalyzer.GetDone().Wait()
-	parDir.UpdateStats(make(fs.HardLinkedItems))
+	parAnalyzer := CreateAnalyzer()
+	parDir := parAnalyzer.AnalyzeDir(context.Background(), "test_dir", Options{IgnoreFile: func(_ string) bool { return false }})
+	parDir.UpdateStats(false)
 	parNames := getFileNames(parDir)
 
 	// Results should match
 	assert.Equal(t, seqNames, parNames,
 		"Parallel and sequential analyzers produced different results")
-}
-
-func TestFileDirectoryInterleaving(t *testing.T) {
-	// Create test directory with interleaved files and directories
-	err := os.MkdirAll("test_interleave/aaa_dir", 0755)
-	assert.NoError(t, err)
-	err = os.WriteFile("test_interleave/bbb_file", []byte("content"), 0644)
-	assert.NoError(t, err)
-	err = os.MkdirAll("test_interleave/ccc_dir", 0755)
-	assert.NoError(t, err)
-	err = os.WriteFile("test_interleave/ddd_file", []byte("content"), 0644)
-	assert.NoError(t, err)
-	defer os.RemoveAll("test_interleave")
-
-	// Run sequential analyzer
-	seqAnalyzer := CreateSeqAnalyzer()
-	seqDir := seqAnalyzer.AnalyzeDir(
-		"test_interleave", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*Dir)
-	seqAnalyzer.GetDone().Wait()
-
-	// Run parallel analyzer
-	parAnalyzer := CreateStableOrderAnalyzer()
-	parDir := parAnalyzer.AnalyzeDir(
-		"test_interleave", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*Dir)
-	parAnalyzer.GetDone().Wait()
-
-	// Extract file/dir names in order
-	seqOrder := make([]string, len(seqDir.Files))
-	for i, item := range seqDir.Files {
-		seqOrder[i] = item.GetName()
-	}
-
-	parOrder := make([]string, len(parDir.Files))
-	for i, item := range parDir.Files {
-		parOrder[i] = item.GetName()
-	}
-
-	// The order must be identical: [aaa_dir, bbb_file, ccc_dir, ddd_file]
-	assert.Equal(t, seqOrder, parOrder,
-		"Parallel analyzer did not preserve file/directory interleaving")
-
-	// Verify the expected order (alphabetical from os.ReadDir)
-	assert.Equal(t, "aaa_dir", seqOrder[0])
-	assert.Equal(t, "bbb_file", seqOrder[1])
-	assert.Equal(t, "ccc_dir", seqOrder[2])
-	assert.Equal(t, "ddd_file", seqOrder[3])
 }
 
 // getFileNames recursively collects file names from a directory tree

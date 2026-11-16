@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/pkg/fs"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -109,36 +109,6 @@ func TestRemove(t *testing.T) {
 	assert.Equal(t, file2, dir.Files[0])
 }
 
-func TestRemoveByName(t *testing.T) {
-	dir := Dir{
-		File: &File{
-			Name:  "xxx",
-			Size:  5,
-			Usage: 8,
-		},
-		ItemCount: 2,
-	}
-
-	file := &File{
-		Name:   "yyy",
-		Size:   2,
-		Usage:  4,
-		Parent: &dir,
-	}
-	file2 := &File{
-		Name:   "zzz",
-		Size:   3,
-		Usage:  4,
-		Parent: &dir,
-	}
-	dir.Files = fs.Files{file, file2}
-
-	dir.Files = dir.Files.RemoveByName("yyy")
-
-	assert.Equal(t, 1, len(dir.Files))
-	assert.Equal(t, file2, dir.Files[0])
-}
-
 func TestRemoveNotInDir(t *testing.T) {
 	dir := Dir{
 		File: &File{
@@ -170,37 +140,6 @@ func TestRemoveNotInDir(t *testing.T) {
 	assert.Equal(t, 1, len(dir.Files))
 }
 
-func TestRemoveByNameNotInDir(t *testing.T) {
-	dir := Dir{
-		File: &File{
-			Name:  "xxx",
-			Size:  5,
-			Usage: 8,
-		},
-		ItemCount: 2,
-	}
-
-	file := &File{
-		Name:   "yyy",
-		Size:   2,
-		Usage:  4,
-		Parent: &dir,
-	}
-	file2 := &File{
-		Name:  "zzz",
-		Size:  3,
-		Usage: 4,
-	}
-	dir.Files = fs.Files{file}
-
-	_, ok := dir.Files.IndexOf(file2)
-	assert.Equal(t, false, ok)
-
-	dir.Files = dir.Files.RemoveByName("zzz")
-
-	assert.Equal(t, 1, len(dir.Files))
-}
-
 func TestUpdateStats(t *testing.T) {
 	dir := Dir{
 		File: &File{
@@ -225,7 +164,7 @@ func TestUpdateStats(t *testing.T) {
 	}
 	dir.Files = fs.Files{file, file2}
 
-	dir.UpdateStats(nil)
+	dir.UpdateStats(false)
 
 	assert.Equal(t, int64(5), dir.Size)
 	assert.Equal(t, 42, dir.GetMtime().Minute())
@@ -276,7 +215,7 @@ func TestUpdateStatsWithFileFiltering(t *testing.T) {
 	subdir.Files = fs.Files{subsubdir}
 	dir.Files = fs.Files{file, file2, subdir}
 
-	dir.UpdateStatsWithFileFiltering(nil)
+	dir.UpdateStats(true)
 
 	assert.Equal(t, int64(1024+5), dir.Size)
 	assert.Equal(t, int64(4), dir.ItemCount)
@@ -295,14 +234,14 @@ func TestDirOwnUsageIsCounted(t *testing.T) {
 	}
 
 	root := newTree()
-	root.UpdateStats(make(fs.HardLinkedItems))
+	root.UpdateStats(false)
 	assert.Equal(t, int64(2*4096), root.GetUsage())
 	assert.Equal(t, int64(3), root.GetItemCount())
 
 	// Filtering collapses a tree of empty dirs to one item, but the blocks the
 	// directories occupy are still counted.
 	root = newTree()
-	root.UpdateStatsWithFileFiltering(make(fs.HardLinkedItems))
+	root.UpdateStats(true)
 	assert.Equal(t, int64(2*4096), root.GetUsage())
 	assert.Equal(t, int64(1), root.GetItemCount())
 }
@@ -371,40 +310,6 @@ func TestGetFiles(t *testing.T) {
 	assert.Equal(t, 0, len(fileFiles))
 }
 
-func TestGetFilesLocked(t *testing.T) {
-	file := &File{
-		Name: "xxx",
-		Mli:  5,
-	}
-	dir := &Dir{
-		File: &File{
-			Name:  "root",
-			Size:  5,
-			Usage: 12,
-		},
-		ItemCount: 3,
-		BasePath:  "/",
-		Files:     fs.Files{file},
-	}
-
-	unlock := dir.RLock()
-	defer unlock()
-	files := slices.Collect(dir.GetFiles(fs.SortByName, fs.SortAsc))
-	locked := slices.Collect(dir.GetFilesLocked(fs.SortByName, fs.SortAsc))
-	assert.Equal(t, len(files), len(locked))
-	assert.Equal(t, files[0].GetName(), locked[0].GetName())
-}
-
-func TestAddFilePanicsOnFile(t *testing.T) {
-	file := &File{
-		Name: "xxx",
-		Mli:  5,
-	}
-	assert.Panics(t, func() {
-		file.AddFile(file)
-	})
-}
-
 func TestStatsFromJSONArePreserved(t *testing.T) {
 	dir := &Dir{
 		File: &File{
@@ -416,13 +321,13 @@ func TestStatsFromJSONArePreserved(t *testing.T) {
 	}
 	dir.SetStatsFromJSON()
 
-	dir.UpdateStats(make(fs.HardLinkedItems, 10))
+	dir.UpdateStats(false)
 	assert.Equal(t, int64(4096), dir.GetSize())
 	assert.Equal(t, int64(2048), dir.GetUsage())
 	assert.Equal(t, int64(2), dir.GetItemCount())
 
-	dir.UpdateStatsWithFileFiltering(make(fs.HardLinkedItems, 10))
-	count, size, usage := dir.GetItemStats(make(fs.HardLinkedItems, 10), true)
+	dir.UpdateStats(true)
+	count, size, usage := dir.itemStats(fs.NewHardLinks(), true)
 	assert.Equal(t, int64(2), count)
 	assert.Equal(t, int64(4096), size)
 	assert.Equal(t, int64(2048), usage)

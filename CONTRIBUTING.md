@@ -6,9 +6,9 @@ is developed so your change fits in with the rest of the codebase.
 ## Prerequisites
 
 - **Go** 1.26 or newer (development happens on 1.27; CI runs 1.26.x and 1.27.x). The pinned toolchain is in `.tool-versions`.
-- **Node.js** — only needed if you change the web UI (`webui/frontend`). The
-  compiled assets in `webui/dist` are committed and embedded into the binary, so
-  pure-Go builds don't require Node.
+- **Node.js** — only needed if you change the web UI (`internal/webui/frontend`).
+  The compiled assets in `internal/webui/dist` are committed and embedded into the
+  binary, so pure-Go builds don't require Node.
 
 Install the development tools (`gotestsum`, `gox`, `golangci-lint`, ...) with:
 
@@ -18,12 +18,17 @@ make install-dev-dependencies
 
 ## Project layout
 
-- `cmd/gdu` — CLI entrypoint and flag wiring.
-- `pkg/` — reusable libraries: `analyze`, `cleanup`, `device`, `fs`, `path`,
-  `remove`, `timefilter`, `annex`.
-- `stdout/`, `report/`, `tui/` — output backends (non-interactive stdout, JSON
-  export/import, and the interactive terminal UI).
-- `webui/` — the optional React web UI (compiled output is committed).
+- `cmd/gdu` — CLI entrypoint; `cmd/gdu/app` wires the flags to a frontend.
+- `pkg/` — the public Go API (see [ADR 6](docs/adr/0006-a-small-public-go-api.md)):
+  `analyze` scans a directory into a tree (`analyze/badger` and `analyze/sqlite`
+  keep it in a database), `fs` is the tree, `device` lists mounted devices.
+  Their exported signatures must not use types from `internal/`.
+- `internal/stdout`, `internal/report`, `internal/tui`, `internal/webui` —
+  frontends (non-interactive stdout, JSON export/import, the interactive terminal
+  UI, and the optional React web UI, whose compiled output is committed).
+- `internal/` — everything else: the session the frontends share, deletion
+  (`remove`), cleanup classification, settings shared by the frontends
+  (`common`), and helpers.
 - `docs/`, `configuration.md`, `INSTALL.md`, `gdu.1.md` — documentation. The man
   page `gdu.1` is generated from `gdu.1.md`.
 
@@ -99,7 +104,7 @@ period.
 
 ## Pull requests
 
-- Branch off `master` and open your pull request against `master`.
+- Branch off `main` and open your pull request against `main`.
 - Pull requests are **squash-merged**, and the final commit subject becomes the
   release changelog entry — so make it a clean Conventional Commit. GitHub
   appends the PR number automatically (e.g. `feat: add web UI (#617)`).

@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
-	"github.com/dundee/gdu/v5/cmd/gdu/app"
+	"github.com/dundee/gdu/v6/cmd/gdu/app"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNoViewFileFlagRegistered(t *testing.T) {
@@ -190,4 +194,96 @@ func TestInitConfigMalformedUserConfig(t *testing.T) {
 	if configErr == nil {
 		t.Fatal("expected configErr to be set for malformed user config, got nil")
 	}
+}
+
+// A config file that is just null, as an empty YAML document can be, sets
+// nothing: it must neither crash gdu nor clear what the other file set.
+func TestInitConfigNullConfigs(t *testing.T) {
+	dir := t.TempDir()
+	systemPath := filepath.Join(dir, "gdu.yaml")
+	userPath := filepath.Join(dir, "user.yaml")
+
+	origArgs := os.Args
+	origPath := systemConfigPath
+	origErr := configErr
+	origAf := af
+	t.Cleanup(func() {
+		os.Args = origArgs
+		systemConfigPath = origPath
+		configErr = origErr
+		af = origAf
+	})
+
+	for _, doc := range []string{"null\n", "---\n~\n", "~"} {
+		for _, systemDoc := range []string{doc, "no-color: true\n"} {
+			if err := os.WriteFile(systemPath, []byte(systemDoc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(userPath, []byte(doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			systemConfigPath = systemPath
+			os.Args = []string{"gdu", "--config-file=" + userPath}
+			af = &app.Flags{ShowApparentSize: true}
+			configErr = nil
+
+			initConfig()
+			setDefaults()
+
+			if configErr != nil {
+				t.Fatalf("%q: unexpected config error: %v", doc, configErr)
+			}
+			if !af.ShowApparentSize {
+				t.Errorf("%q: the null config cleared a value set before it", doc)
+			}
+			if wantNoColor := systemDoc != doc; af.NoColor != wantNoColor {
+				t.Errorf("%q: NoColor = %v, want %v", doc, af.NoColor, wantNoColor)
+			}
+		}
+	}
+}
+
+// A config file that cannot be read is reported on stderr, naming the file,
+// rather than only in the log, which is /dev/null by default.
+func TestBrokenConfigIsReported(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gdu.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(":\tinvalid: yaml: {"), 0o600))
+
+	origArgs, origPath, origErr, origAf := os.Args, systemConfigPath, configErr, af
+	t.Cleanup(func() {
+		os.Args, systemConfigPath, configErr, af = origArgs, origPath, origErr, origAf
+	})
+	systemConfigPath = filepath.Join(dir, "missing.yaml")
+	os.Args = []string{"gdu", "--config-file=" + path}
+	af = &app.Flags{}
+	configErr = nil
+
+	initConfig()
+	var stderr bytes.Buffer
+	reportConfigError(&stderr)
+
+	assert.Contains(t, stderr.String(), "gdu: ignoring the config file: "+path+":")
+}
+
+// --max-cores bounds the processors of the process, at most as many as the
+// machine has; without it, the runtime's default stays.
+func TestSetMaxProcs(t *testing.T) {
+	orig := runtime.GOMAXPROCS(0)
+	t.Cleanup(func() { runtime.GOMAXPROCS(orig) })
+
+	setMaxProcs(1)
+	assert.Equal(t, 1, runtime.GOMAXPROCS(0))
+
+	for _, n := range []int{0, -100} {
+		setMaxProcs(n)
+		assert.Equal(t, 1, runtime.GOMAXPROCS(0), "%d leaves GOMAXPROCS alone", n)
+	}
+
+	setMaxProcs(runtime.NumCPU() + 1)
+	assert.Equal(t, runtime.NumCPU(), runtime.GOMAXPROCS(0), "more than the machine has is bounded by it")
+}
+
+func TestMaxCoresDefaultsToTheRuntime(t *testing.T) {
+	assert.Equal(t, "0", rootCmd.Flags().Lookup("max-cores").DefValue)
 }

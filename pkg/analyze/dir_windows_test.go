@@ -4,6 +4,7 @@ package analyze
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -11,8 +12,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/dundee/gdu/v5/internal/common"
-	"github.com/dundee/gdu/v5/pkg/fs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
@@ -34,7 +33,7 @@ func (m mockWinFileInfo) ModTime() time.Time { return m.modTime }
 func (m mockWinFileInfo) IsDir() bool        { return m.isDir }
 func (m mockWinFileInfo) Sys() any           { return m.sys }
 
-func TestSetPlatformSpecificAttrsRegularFile(t *testing.T) {
+func TestFileStatsUsageRegularFile(t *testing.T) {
 	now := time.Now()
 	nsec := now.UnixNano()
 	info := mockWinFileInfo{
@@ -54,13 +53,13 @@ func TestSetPlatformSpecificAttrsRegularFile(t *testing.T) {
 		Size: 1024,
 	}
 
-	setPlatformSpecificAttrs(file, info, file.Name)
+	file.Usage, _ = fileStats(info, file.Name)
 
 	assert.Equal(t, int64(1024), file.Size)
 	assert.Equal(t, int64(1024), file.Usage)
 }
 
-func TestSetPlatformSpecificAttrsRecallOnOpen(t *testing.T) {
+func TestFileStatsUsageRecallOnOpen(t *testing.T) {
 	info := mockWinFileInfo{
 		name: "online_open.txt",
 		size: 2048,
@@ -74,13 +73,13 @@ func TestSetPlatformSpecificAttrsRecallOnOpen(t *testing.T) {
 		Size: 2048,
 	}
 
-	setPlatformSpecificAttrs(file, info, file.Name)
+	file.Usage, _ = fileStats(info, file.Name)
 
 	assert.Equal(t, int64(2048), file.Size)
 	assert.Equal(t, int64(0), file.Usage)
 }
 
-func TestSetPlatformSpecificAttrsRecallOnDataAccess(t *testing.T) {
+func TestFileStatsUsageRecallOnDataAccess(t *testing.T) {
 	info := mockWinFileInfo{
 		name: "online_access.txt",
 		size: 4096,
@@ -94,13 +93,13 @@ func TestSetPlatformSpecificAttrsRecallOnDataAccess(t *testing.T) {
 		Size: 4096,
 	}
 
-	setPlatformSpecificAttrs(file, info, file.Name)
+	file.Usage, _ = fileStats(info, file.Name)
 
 	assert.Equal(t, int64(4096), file.Size)
 	assert.Equal(t, int64(0), file.Usage)
 }
 
-func TestSetPlatformSpecificAttrsBothRecallAttributes(t *testing.T) {
+func TestFileStatsUsageBothRecallAttributes(t *testing.T) {
 	info := mockWinFileInfo{
 		name: "online_both.txt",
 		size: 8192,
@@ -114,13 +113,13 @@ func TestSetPlatformSpecificAttrsBothRecallAttributes(t *testing.T) {
 		Size: 8192,
 	}
 
-	setPlatformSpecificAttrs(file, info, file.Name)
+	file.Usage, _ = fileStats(info, file.Name)
 
 	assert.Equal(t, int64(8192), file.Size)
 	assert.Equal(t, int64(0), file.Usage)
 }
 
-func TestSetPlatformSpecificAttrsNonWinSys(t *testing.T) {
+func TestFileStatsUsageNonWinSys(t *testing.T) {
 	info := mockWinFileInfo{
 		name: "other.txt",
 		size: 512,
@@ -132,7 +131,7 @@ func TestSetPlatformSpecificAttrsNonWinSys(t *testing.T) {
 		Size: 512,
 	}
 
-	setPlatformSpecificAttrs(file, info, file.Name)
+	file.Usage, _ = fileStats(info, file.Name)
 
 	assert.Equal(t, int64(512), file.Size)
 	assert.Equal(t, int64(512), file.Usage)
@@ -154,7 +153,7 @@ func TestCreateFileItemOnlineOnly(t *testing.T) {
 	assert.Equal(t, int64(0), file.GetUsage())
 }
 
-func TestGetPlatformSpecificUsageAndMli(t *testing.T) {
+func TestFileStats(t *testing.T) {
 	regularInfo := mockWinFileInfo{
 		name: "file.bin",
 		size: 3000,
@@ -162,9 +161,9 @@ func TestGetPlatformSpecificUsageAndMli(t *testing.T) {
 			FileAttributes: 0,
 		},
 	}
-	usage, ino := getPlatformSpecificUsageAndMli(regularInfo, regularInfo.name)
+	usage, link := fileStats(regularInfo, regularInfo.name)
 	assert.Equal(t, int64(3000), usage)
-	assert.Equal(t, uint64(0), ino)
+	assert.Zero(t, link)
 
 	cloudInfo := mockWinFileInfo{
 		name: "file.bin",
@@ -173,9 +172,9 @@ func TestGetPlatformSpecificUsageAndMli(t *testing.T) {
 			FileAttributes: fileAttributeRecallOnDataAccess,
 		},
 	}
-	usage, ino = getPlatformSpecificUsageAndMli(cloudInfo, cloudInfo.name)
+	usage, link = fileStats(cloudInfo, cloudInfo.name)
 	assert.Equal(t, int64(0), usage)
-	assert.Equal(t, uint64(0), ino)
+	assert.Zero(t, link)
 
 	compressedInfo := mockWinFileInfo{
 		name: "file.bin",
@@ -184,9 +183,9 @@ func TestGetPlatformSpecificUsageAndMli(t *testing.T) {
 			FileAttributes: windows.FILE_ATTRIBUTE_COMPRESSED,
 		},
 	}
-	usage, ino = getPlatformSpecificUsageAndMli(compressedInfo, filepath.Join(t.TempDir(), "missing.bin"))
+	usage, link = fileStats(compressedInfo, filepath.Join(t.TempDir(), "missing.bin"))
 	assert.Equal(t, int64(3000), usage)
-	assert.Equal(t, uint64(0), ino)
+	assert.Zero(t, link)
 
 	target := filepath.Join(t.TempDir(), "target.bin")
 	require.NoError(t, os.WriteFile(target, make([]byte, 3000), 0o600))
@@ -197,12 +196,12 @@ func TestGetPlatformSpecificUsageAndMli(t *testing.T) {
 			FileAttributes: windows.FILE_ATTRIBUTE_COMPRESSED | windows.FILE_ATTRIBUTE_REPARSE_POINT,
 		},
 	}
-	usage, ino = getPlatformSpecificUsageAndMli(symlinkInfo, target)
+	usage, link = fileStats(symlinkInfo, target)
 	assert.Equal(t, int64(0), usage)
-	assert.Equal(t, uint64(0), ino)
+	assert.Zero(t, link)
 }
 
-func TestGetSyscallStats(t *testing.T) {
+func TestFileStatsOfCloudFiles(t *testing.T) {
 	regularInfo := mockWinFileInfo{
 		name: "file.bin",
 		size: 5000,
@@ -210,9 +209,9 @@ func TestGetSyscallStats(t *testing.T) {
 			FileAttributes: 0,
 		},
 	}
-	usage, mli := getSyscallStats(regularInfo, regularInfo.name)
+	usage, link := fileStats(regularInfo, regularInfo.name)
 	assert.Equal(t, int64(5000), usage)
-	assert.Equal(t, uint64(0), mli)
+	assert.Zero(t, link)
 
 	cloudInfo := mockWinFileInfo{
 		name: "file.bin",
@@ -221,9 +220,9 @@ func TestGetSyscallStats(t *testing.T) {
 			FileAttributes: fileAttributeRecallOnOpen,
 		},
 	}
-	usage, mli = getSyscallStats(cloudInfo, cloudInfo.name)
+	usage, link = fileStats(cloudInfo, cloudInfo.name)
 	assert.Equal(t, int64(0), usage)
-	assert.Equal(t, uint64(0), mli)
+	assert.Zero(t, link)
 }
 
 const testFileSize = 4 << 20
@@ -274,13 +273,13 @@ func TestCompressedAndSparseFilesUsage(t *testing.T) {
 		assert.Equal(t, int64(testFileSize), file.GetSize(), name)
 		assert.Less(t, file.GetUsage(), int64(testFileSize/2), name)
 
-		usage, _ := getSyscallStats(info, path)
+		usage, _ := fileStats(info, path)
 		assert.Equal(t, file.GetUsage(), usage, name)
 	}
 
 	analyzers := append([]parityAnalyzer{{
 		name:     "parallel",
-		analyzer: func(*testing.T) common.Analyzer { return CreateAnalyzer() },
+		analyzer: func(*testing.T) Analyzer { return CreateAnalyzer() },
 	}}, parityAnalyzers()...)
 	for _, tc := range analyzers {
 		t.Run(tc.name, func(t *testing.T) {
@@ -292,9 +291,8 @@ func TestCompressedAndSparseFilesUsage(t *testing.T) {
 
 	t.Run("top dir", func(t *testing.T) {
 		analyzer := CreateTopDirAnalyzer()
-		dir := analyzer.AnalyzeDir(root, func(_, _ string) bool { return false }, func(_ string) bool { return false })
-		analyzer.GetDone().Wait()
-		dir.UpdateStats(make(fs.HardLinkedItems))
+		dir := analyzer.AnalyzeDir(context.Background(), root, Options{IgnoreFile: func(_ string) bool { return false }})
+		dir.UpdateStats(false)
 		assert.GreaterOrEqual(t, dir.GetSize(), int64(2*testFileSize))
 		assert.Less(t, dir.GetUsage(), int64(testFileSize))
 	})

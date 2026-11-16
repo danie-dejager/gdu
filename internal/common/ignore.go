@@ -5,27 +5,15 @@ package common
 import (
 	"bufio"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
-	log "github.com/sirupsen/logrus"
+	"github.com/dundee/gdu/v6/internal/ignore"
+	"github.com/dundee/gdu/v6/pkg/analyze"
 )
-
-// CreateIgnorePattern creates one pattern from all path patterns.
-// Every relative pattern also gets its absolute form added as an alternative
-// and vice versa, so that patterns work no matter whether the scanned paths
-// are relative or absolute. The added alternative is the pattern itself with
-// a generated path prefix, so it stays a regular expression; only the path
-// separators in it are escaped.
-func CreateIgnorePattern(paths []string) (compiled *regexp.Regexp, err error) {
-	fragments, err := regexPatternFragments(paths)
-	if err != nil {
-		return nil, err
-	}
-	return compileIgnoreFragments(fragments)
-}
 
 // regexPatternFragments validates the given regular path patterns and returns
 // them as regex fragments. Each pattern gets an absolute/relative twin so that
@@ -74,61 +62,35 @@ func compileIgnoreFragments(fragments []string) (*regexp.Regexp, error) {
 	return regexp.Compile(`^(?:` + strings.Join(fragments, "|") + `)$`)
 }
 
-// addIgnoreDirPatterns registers regex fragments coming from one pattern
-// source and recompiles the combined pattern.
-//
-// Sources accumulate instead of overriding each other: --ignore-dirs-pattern,
-// --ignore-from and --ignore-from-gitignore all feed this one pattern, so a
-// pattern the user asked for is never silently dropped because another flag
-// was given as well.
-func (ui *UI) addIgnoreDirPatterns(fragments []string) error {
-	ui.ignorePatternFragments = append(ui.ignorePatternFragments, fragments...)
-	compiled, err := compileIgnoreFragments(ui.ignorePatternFragments)
-	if err != nil {
-		return err
-	}
-	ui.IgnoreDirPathPatterns = compiled
-	return nil
-}
-
-// SetIgnoreDirPaths sets paths to ignore
-func (ui *UI) SetIgnoreDirPaths(paths []string) {
-	log.Printf("Ignoring dirs %s", strings.Join(paths, ", "))
-	ui.IgnoreDirPaths = make(map[string]struct{}, len(paths)*2)
+// ignoreDirPathSet returns the set of the paths of the directories to leave
+// out, each also in its absolute or relative form, so that it matches however
+// the scanned path is spelled.
+func ignoreDirPathSet(paths []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(paths)*2)
 	for _, path := range paths {
-		ui.IgnoreDirPaths[path] = struct{}{}
+		set[path] = struct{}{}
 		if !filepath.IsAbs(path) {
 			if absPath, err := filepath.Abs(path); err == nil {
-				ui.IgnoreDirPaths[absPath] = struct{}{}
+				set[absPath] = struct{}{}
 			}
 		} else {
 			if relPath, err := filepath.Rel("/", path); err == nil {
-				ui.IgnoreDirPaths[relPath] = struct{}{}
+				set[relPath] = struct{}{}
 			}
 		}
 	}
+	return set
 }
 
-// SetIgnoreDirPatterns sets regular patterns of dirs to ignore
-func (ui *UI) SetIgnoreDirPatterns(paths []string) error {
-	log.Printf("Ignoring dir patterns %s", strings.Join(paths, ", "))
-	fragments, err := regexPatternFragments(paths)
-	if err != nil {
-		return err
-	}
-	return ui.addIgnoreDirPatterns(fragments)
-}
-
-// SetIgnoreFromFile sets regular patterns of dirs to ignore.
-// The file contains one regular expression per line; blank lines and lines
-// starting with # are skipped.
-func (ui *UI) SetIgnoreFromFile(ignoreFile string) error {
+// readIgnoreFile returns the patterns of the file ignoreFile, one regular
+// expression per line, as regex fragments. Blank lines and # comments are
+// skipped.
+func readIgnoreFile(ignoreFile string) ([]string, error) {
 	var paths []string
-	log.Printf("Reading ignoring dir patterns from file '%s'", ignoreFile)
 
 	file, err := os.Open(ignoreFile)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer file.Close()
 
@@ -139,46 +101,70 @@ func (ui *UI) SetIgnoreFromFile(ignoreFile string) error {
 			continue
 		}
 		if _, err := regexp.Compile(pattern); err != nil {
-			return fmt.Errorf("invalid pattern %q on line %d of %s: %w",
+			return nil, fmt.Errorf("invalid pattern %q on line %d of %s: %w",
 				pattern, lineNo, ignoreFile, err)
 		}
 		paths = append(paths, pattern)
 	}
 
 	if err := scanner.Err(); err != nil {
-		return err
+		return nil, err
 	}
+	return regexPatternFragments(paths)
+}
 
-	fragments, err := regexPatternFragments(paths)
+// IgnorePattern compiles the patterns of the directories a scan leaves out,
+// from their three sources combined: regular expressions (patterns), a file
+// of them (ignoreFile) and a file in .gitignore syntax (gitignoreFile), whose
+// leading / anchors a pattern at the scanned roots. It returns nil when there
+// is none.
+func IgnorePattern(patterns []string, ignoreFile, gitignoreFile string, roots []string) (*ignore.Pattern, error) {
+	fragments, err := regexPatternFragments(patterns)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return ui.addIgnoreDirPatterns(fragments)
+	var tails [][]string
+	if ignoreFile != "" {
+		fromFile, err := readIgnoreFile(ignoreFile)
+		if err != nil {
+			return nil, err
+		}
+		fragments = append(fragments, fromFile...)
+	}
+	if gitignoreFile != "" {
+		fromGitignore, err := readGitignoreFile(gitignoreFile, roots)
+		if err != nil {
+			return nil, err
+		}
+		tails = fromGitignore.tails
+		fragments = append(fragments, fromGitignore.fragments...)
+	}
+	regex, err := compileIgnoreFragments(fragments)
+	if err != nil {
+		return nil, err
+	}
+	return ignore.New(tails, regex), nil
 }
 
-// SetIgnoreTypes sets file types to ignore
-func (ui *UI) SetIgnoreTypes(types []string) {
-	log.Printf("Ignoring file types: %s", strings.Join(types, ", "))
-	ui.IgnoreTypes = types
-}
-
-// SetIncludeTypes sets file types to include (whitelist)
-func (ui *UI) SetIncludeTypes(types []string) {
-	log.Printf("Including only file types: %s", strings.Join(types, ", "))
-	ui.IncludeTypes = types
-}
-
-// SetIgnoreHidden sets flags if hidden dirs should be ignored
-func (ui *UI) SetIgnoreHidden(value bool) {
-	log.Printf("Ignoring hidden dirs")
-	ui.IgnoreHidden = value
+// IgnoreOtherDevices leaves the directories at paths, the mount points of
+// other devices below the device to scan, out of the scans that follow. They
+// replace those given before, and add to the directories and patterns the
+// user left out.
+func (ui *UI) IgnoreOtherDevices(paths []string) {
+	ui.otherDevices = make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		ui.otherDevices[path] = struct{}{}
+	}
 }
 
 // ShouldDirBeIgnored returns true if given path should be ignored
 func (ui *UI) ShouldDirBeIgnored(name, path string) bool {
 	_, shouldIgnore := ui.IgnoreDirPaths[path]
+	if !shouldIgnore {
+		_, shouldIgnore = ui.otherDevices[path]
+	}
 	if shouldIgnore {
-		log.Printf("Directory %s ignored", path)
+		slog.Info("directory ignored", "path", path)
 	}
 	return shouldIgnore
 }
@@ -187,7 +173,7 @@ func (ui *UI) ShouldDirBeIgnored(name, path string) bool {
 func (ui *UI) ShouldDirBeIgnoredUsingPattern(name, path string) bool {
 	shouldIgnore := ui.IgnoreDirPathPatterns.MatchString(path)
 	if shouldIgnore {
-		log.Printf("Directory %s ignored", path)
+		slog.Info("directory ignored", "path", path)
 	}
 	return shouldIgnore
 }
@@ -196,7 +182,7 @@ func (ui *UI) ShouldDirBeIgnoredUsingPattern(name, path string) bool {
 func (ui *UI) IsHiddenDir(name, path string) bool {
 	shouldIgnore := name[0] == '.'
 	if shouldIgnore {
-		log.Printf("Directory %s ignored", path)
+		slog.Info("directory ignored", "path", path)
 	}
 	return shouldIgnore
 }
@@ -219,7 +205,7 @@ func (ui *UI) ShouldFileBeIgnoredByType(name string) bool {
 		// Remove leading dot from ignoreType
 		cleanIgnoreType := strings.TrimPrefix(strings.ToLower(ignoreType), ".")
 		if cleanIgnoreType == ext {
-			log.Printf("File %s ignored by type", name)
+			slog.Info("file ignored by type", "name", name)
 			return true
 		}
 	}
@@ -248,62 +234,53 @@ func (ui *UI) ShouldFileBeIncludedByType(name string) bool {
 		}
 	}
 
-	log.Printf("File %s excluded by type filter", name)
+	slog.Info("file excluded by type filter", "name", name)
 	return false
 }
 
-// SetIgnoreOtherFilesystems sets whether dirs on other filesystems than their parent should be ignored
-func (ui *UI) SetIgnoreOtherFilesystems(value bool) {
-	log.Printf("Not crossing filesystem boundaries")
-	ui.IgnoreOtherFilesystems = value
-}
-
 // CreateIgnoreFunc returns function for detecting if dir should be ignored
-func (ui *UI) CreateIgnoreFunc() ShouldDirBeIgnored {
-	ignore := ui.createPathIgnoreFunc()
+func (ui *UI) CreateIgnoreFunc() analyze.ShouldDirBeIgnored {
+	ignoreDir := ui.createPathIgnoreFunc()
 	if !ui.IgnoreOtherFilesystems {
-		return ignore
+		return ignoreDir
 	}
 	filesystems := newFilesystemIDCache()
 	return func(name, path string) bool {
-		return ignore(name, path) || filesystems.isOnOtherFilesystem(path)
+		return ignoreDir(name, path) || filesystems.isOnOtherFilesystem(path)
 	}
 }
 
 // createPathIgnoreFunc returns function for detecting if dir should be ignored
 // based on its name or path only
-// nolint: gocyclo // Why: This function is a switch statement that is not too complex
-func (ui *UI) createPathIgnoreFunc() ShouldDirBeIgnored {
-	switch {
-	case len(ui.IgnoreDirPaths) > 0 && ui.IgnoreDirPathPatterns == nil && !ui.IgnoreHidden:
-		return ui.ShouldDirBeIgnored
-	case len(ui.IgnoreDirPaths) > 0 && ui.IgnoreDirPathPatterns != nil && !ui.IgnoreHidden:
-		return func(name, path string) bool {
-			return ui.ShouldDirBeIgnored(name, path) || ui.ShouldDirBeIgnoredUsingPattern(name, path)
+func (ui *UI) createPathIgnoreFunc() analyze.ShouldDirBeIgnored {
+	var checks []analyze.ShouldDirBeIgnored
+	if len(ui.IgnoreDirPaths) > 0 || len(ui.otherDevices) > 0 {
+		checks = append(checks, ui.ShouldDirBeIgnored)
+	}
+	if ui.IgnoreDirPathPatterns != nil {
+		checks = append(checks, ui.ShouldDirBeIgnoredUsingPattern)
+	}
+	if ui.IgnoreHidden {
+		checks = append(checks, ui.IsHiddenDir)
+	}
+	switch len(checks) {
+	case 0:
+		return func(string, string) bool { return false }
+	case 1:
+		return checks[0]
+	}
+	return func(name, path string) bool {
+		for _, check := range checks {
+			if check(name, path) {
+				return true
+			}
 		}
-	case len(ui.IgnoreDirPaths) > 0 && ui.IgnoreDirPathPatterns != nil && ui.IgnoreHidden:
-		return func(name, path string) bool {
-			return ui.ShouldDirBeIgnored(name, path) || ui.ShouldDirBeIgnoredUsingPattern(name, path) || ui.IsHiddenDir(name, path)
-		}
-	case len(ui.IgnoreDirPaths) == 0 && ui.IgnoreDirPathPatterns != nil && ui.IgnoreHidden:
-		return func(name, path string) bool {
-			return ui.ShouldDirBeIgnoredUsingPattern(name, path) || ui.IsHiddenDir(name, path)
-		}
-	case len(ui.IgnoreDirPaths) == 0 && ui.IgnoreDirPathPatterns != nil && !ui.IgnoreHidden:
-		return ui.ShouldDirBeIgnoredUsingPattern
-	case len(ui.IgnoreDirPaths) == 0 && ui.IgnoreDirPathPatterns == nil && ui.IgnoreHidden:
-		return ui.IsHiddenDir
-	case len(ui.IgnoreDirPaths) > 0 && ui.IgnoreDirPathPatterns == nil && ui.IgnoreHidden:
-		return func(name, path string) bool {
-			return ui.ShouldDirBeIgnored(name, path) || ui.IsHiddenDir(name, path)
-		}
-	default:
-		return func(name, path string) bool { return false }
+		return false
 	}
 }
 
 // CreateFileTypeFilter returns function for detecting if file should be ignored based on type
-func (ui *UI) CreateFileTypeFilter() ShouldFileBeIgnored {
+func (ui *UI) CreateFileTypeFilter() analyze.ShouldFileBeIgnored {
 	// If we have include types, use whitelist mode
 	if len(ui.IncludeTypes) > 0 {
 		return func(name string) bool {

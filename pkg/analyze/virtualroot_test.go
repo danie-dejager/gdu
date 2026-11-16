@@ -3,7 +3,7 @@ package analyze
 import (
 	"testing"
 
-	"github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/pkg/fs"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -48,7 +48,7 @@ func TestCreateVirtualRootDirAggregatesStats(t *testing.T) {
 		createScannedRoot("/var", "log", 20),
 	)
 
-	root.UpdateStats(make(fs.HardLinkedItems))
+	root.UpdateStats(false)
 
 	assert.Equal(t, int64(30), root.GetSize())
 	assert.Equal(t, int64(30), root.GetUsage())
@@ -59,7 +59,7 @@ func TestCreateVirtualRootDirAggregatesStats(t *testing.T) {
 func TestCreateVirtualRootDirWithoutRoots(t *testing.T) {
 	root := CreateVirtualRootDir()
 
-	root.UpdateStats(make(fs.HardLinkedItems))
+	root.UpdateStats(false)
 
 	assert.Equal(t, VirtualRootName, root.GetPath())
 	assert.Equal(t, int64(1), root.GetItemCount())
@@ -86,7 +86,7 @@ func TestVirtualRootDirSubtractsStatsOnRemove(t *testing.T) {
 	first := createScannedRoot("/home/user", "projects", 10)
 	second := createScannedRoot("/var", "log", 20)
 	root := CreateVirtualRootDir(first, second)
-	root.UpdateStats(make(fs.HardLinkedItems))
+	root.UpdateStats(false)
 
 	root.RemoveFile(second)
 

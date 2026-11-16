@@ -1,53 +1,21 @@
 package analyze
 
 import (
+	"context"
 	"os"
 	"slices"
 	"testing"
 	"time"
 
-	"github.com/dundee/gdu/v5/internal/testdir"
-	"github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/internal/testdir"
+	"github.com/dundee/gdu/v6/pkg/fs"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestStoredAnalyzerGetProgress(t *testing.T) {
-	analyzer := CreateStoredAnalyzer("/tmp/test")
+	analyzer := createStoredAnalyzer("/tmp/test")
 	progress := analyzer.GetProgress()
 	assert.Equal(t, int64(0), progress.ItemCount)
-}
-
-func TestStoredAnalyzerSetFollowSymlinks(t *testing.T) {
-	analyzer := CreateStoredAnalyzer("/tmp/test")
-	analyzer.SetFollowSymlinks(true)
-	assert.True(t, analyzer.followSymlinks)
-	analyzer.SetFollowSymlinks(false)
-	assert.False(t, analyzer.followSymlinks)
-}
-
-func TestStoredAnalyzerSetShowAnnexedSize(t *testing.T) {
-	analyzer := CreateStoredAnalyzer("/tmp/test")
-	analyzer.SetShowAnnexedSize(true)
-	assert.True(t, analyzer.gitAnnexedSize)
-	analyzer.SetShowAnnexedSize(false)
-	assert.False(t, analyzer.gitAnnexedSize)
-}
-
-func TestStoredDirGetFilesCached(t *testing.T) {
-	// Test when files are already cached
-	files := make(fs.Files, 0)
-	dir := &StoredDir{
-		Dir: &Dir{
-			File: &File{
-				Name: "test",
-			},
-			BasePath: "/test",
-		},
-		cachedFiles: files,
-	}
-
-	result := slices.Collect(dir.GetFiles(fs.SortByName, fs.SortAsc))
-	assert.Equal(t, len(files), len(result))
 }
 
 func TestStoredDirRemoveFile(t *testing.T) {
@@ -55,12 +23,10 @@ func TestStoredDirRemoveFile(t *testing.T) {
 	fin := testdir.CreateTestDir()
 	defer fin()
 
-	analyzer := CreateStoredAnalyzer("/tmp/test")
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*StoredDir)
-
-	analyzer.GetDone().Wait()
+	analyzer := createStoredAnalyzer("/tmp/test")
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile: func(_ string) bool { return false },
+	}).(*StoredDir)
 
 	// Remove a file
 	files := slices.Collect(dir.GetFiles(fs.SortByName, fs.SortAsc))
@@ -74,14 +40,12 @@ func TestStoredDirUpdateStats(t *testing.T) {
 	fin := testdir.CreateTestDir()
 	defer fin()
 
-	analyzer := CreateStoredAnalyzer("/tmp/test")
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*StoredDir)
+	analyzer := createStoredAnalyzer("/tmp/test")
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile: func(_ string) bool { return false },
+	}).(*StoredDir)
 
-	analyzer.GetDone().Wait()
-
-	dir.UpdateStats(make(fs.HardLinkedItems))
+	dir.UpdateStats(false)
 }
 
 func TestStoredDirUpdateStatsWithMtimeUpdate(t *testing.T) {
@@ -89,12 +53,10 @@ func TestStoredDirUpdateStatsWithMtimeUpdate(t *testing.T) {
 	fin := testdir.CreateTestDir()
 	defer fin()
 
-	analyzer := CreateStoredAnalyzer("/tmp/test")
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*StoredDir)
-
-	analyzer.GetDone().Wait()
+	analyzer := createStoredAnalyzer("/tmp/test")
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile: func(_ string) bool { return false },
+	}).(*StoredDir)
 
 	// Create a file with newer mtime
 	file := &File{
@@ -103,7 +65,7 @@ func TestStoredDirUpdateStatsWithMtimeUpdate(t *testing.T) {
 	}
 	dir.AddFile(file)
 
-	dir.UpdateStats(make(fs.HardLinkedItems))
+	dir.UpdateStats(false)
 }
 
 func TestStoredDirUpdateStatsWithFlagUpdate(t *testing.T) {
@@ -111,12 +73,10 @@ func TestStoredDirUpdateStatsWithFlagUpdate(t *testing.T) {
 	fin := testdir.CreateTestDir()
 	defer fin()
 
-	analyzer := CreateStoredAnalyzer("/tmp/test")
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*StoredDir)
-
-	analyzer.GetDone().Wait()
+	analyzer := createStoredAnalyzer("/tmp/test")
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile: func(_ string) bool { return false },
+	}).(*StoredDir)
 
 	// Create a file with error flag
 	file := &File{
@@ -125,7 +85,7 @@ func TestStoredDirUpdateStatsWithFlagUpdate(t *testing.T) {
 	}
 	dir.AddFile(file)
 
-	dir.UpdateStats(make(fs.HardLinkedItems))
+	dir.UpdateStats(false)
 	// Just test that UpdateStats runs without error
 	// The flag behavior depends on the specific implementation
 }
@@ -135,12 +95,10 @@ func TestStoredDirUpdateStatsWithDotFlag(t *testing.T) {
 	fin := testdir.CreateTestDir()
 	defer fin()
 
-	analyzer := CreateStoredAnalyzer("/tmp/test")
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*StoredDir)
-
-	analyzer.GetDone().Wait()
+	analyzer := createStoredAnalyzer("/tmp/test")
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile: func(_ string) bool { return false },
+	}).(*StoredDir)
 
 	// Create a file with dot flag
 	file := &File{
@@ -149,7 +107,7 @@ func TestStoredDirUpdateStatsWithDotFlag(t *testing.T) {
 	}
 	dir.AddFile(file)
 
-	dir.UpdateStats(make(fs.HardLinkedItems))
+	dir.UpdateStats(false)
 	assert.Equal(t, '.', dir.Flag)
 }
 
@@ -167,19 +125,17 @@ func TestStoredAnalyzerWithZip(t *testing.T) {
 	assert.NoError(t, err)
 	f.Close()
 
-	analyzer := CreateStoredAnalyzer("/tmp/test")
-	analyzer.SetArchiveBrowsing(true)
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*StoredDir)
-
-	analyzer.GetDone().Wait()
+	analyzer := createStoredAnalyzer("/tmp/test")
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile:      func(_ string) bool { return false },
+		ArchiveBrowsing: true,
+	}).(*StoredDir)
 
 	// Check valid.zip
 	var validZip fs.Item
 	var invalidZip fs.Item
 
-	for _, file := range dir.Files {
+	for file := range dir.GetFiles(fs.SortByName, fs.SortAsc) {
 		if file.GetName() == "valid.zip" {
 			validZip = file
 		}

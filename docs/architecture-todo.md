@@ -20,6 +20,11 @@ _analyzer_, _Item_, _Dir_, _storage strategy_, _hard-link tracker_.
 
 **Strength: Strong**
 
+**Status: Done.** Every analyzer resolves its files through
+`BaseAnalyzer.resolveFile` (`pkg/analyze/entry.go`) and walks directories through
+`walkTree` (`pkg/analyze/walk.go`); each analyzer is a `dirSink` deciding only what
+to do with them. The stable-order analyzer is gone.
+
 - **Files:** `pkg/analyze/parallel.go:30`, `sequential.go:25`, `parallel_stable.go:25`,
   `stored.go:33`, `parallel_top_dir.go:40`, `sqlite.go:896` (six `AnalyzeDir` +
   `processDir` implementations); prototype already in `sqlite.go:983` (`processFile`)
@@ -95,6 +100,10 @@ _analyzer_, _Item_, _Dir_, _storage strategy_, _hard-link tracker_.
 
 **Strength: Worth exploring**
 
+**Status: Done** (ADR 7). `fs.Item` only reads the tree (12 methods); `analyze.Node`
+adds computing the totals and the export, and is what analyzers return;
+`analyze.RemoveEntry` and `ReplaceEntry` change trees. No item type panics any more.
+
 - **Files:** `pkg/fs/file.go:31-54` (24 methods). Implementations that panic on most of it:
   `analyze/top_dir.go:76-86,122,157-162` (`SimpleDir`), `analyze/stored.go:444`
   (`ParentDir`), `analyze/file.go:157-174` (`File` mutation methods),
@@ -116,6 +125,12 @@ _analyzer_, _Item_, _Dir_, _storage strategy_, _hard-link tracker_.
 ## P4 — Consolidate hard-link "count once" into one tracker module
 
 **Strength: Worth exploring**
+
+**Status: Done.** Hard-linked files are identified by device and inode everywhere.
+Analyzers that total during the scan (top-dir, SQLite) share `linkTracker`
+(`pkg/analyze/hardlinks.go`); a tree counts them into an `fs.HardLinks` index of its
+own each time its totals are computed, which its top keeps for removals. `fileFlagMu`
+is gone.
 
 - **Files:** `analyze/file.go:108` (`alreadyCounted`, package-global `fileFlagMu`),
   `analyze/parallel_top_dir.go:237` (`sync.Map`), `analyze/sqlite.go:1028`
@@ -168,6 +183,10 @@ _analyzer_, _Item_, _Dir_, _storage strategy_, _hard-link tracker_.
 
 **Strength: Worth exploring**
 
+**Status: Mostly done** (ADR 8). `app.UI` has six methods: frontends are created from the
+settings and not configured afterwards. The export still refuses `ListDevices` and
+`ReadAnalysis`, which the flag validation now keeps it from being asked.
+
 - **Files:** `cmd/gdu/app/app.go:33-52` (19-method `UI`); `report/export.go:76-96`
   (five no-op stub methods only present to satisfy it: `StartUILoop`, `SetCollapsePath`,
   `SetShowSymlinkTarget`, `ListDevices`, `ReadAnalysis`).
@@ -181,6 +200,9 @@ _analyzer_, _Item_, _Dir_, _storage strategy_, _hard-link tracker_.
 ## P8 — Remove global mutable state in output modules
 
 **Strength: Worth exploring**
+
+**Status: Mostly done** (ADR 8). Colours and the spinner are per UI, and the export now
+honours `--no-unicode` too. `stdout.AnalyzePath` still calls `os.Stat` directly.
 
 - **Files:** `color.NoColor` set as a package-global side effect in `report/export.go:69`
   and `stdout/stdout.go:92`; `progressRunes`/`progressRunesCount` package vars

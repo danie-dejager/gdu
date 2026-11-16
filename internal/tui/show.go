@@ -1,0 +1,450 @@
+package tui
+
+import (
+	"fmt"
+	"log/slog"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
+
+	"github.com/dundee/gdu/v6/build"
+	"github.com/dundee/gdu/v6/pkg/analyze"
+	"github.com/dundee/gdu/v6/pkg/fs"
+)
+
+var (
+	helpDisabledSuffix = " (disabled)"
+
+	helpText = `     [::b]up/down, k/j    [white:black:-]Move cursor up/down
+  [::b]pgup/pgdn, g/G     [white:black:-]Move cursor top/bottom
+ [::b]enter, right, l     [white:black:-]Go to directory/device
+         [::b]left, h     [white:black:-]Go to parent directory
+
+               [::b]r     [white:black:-]Rescan current directory
+               [::b]E     [white:black:-]Export analysis data to file as JSON
+               [::b]/     [white:black:-]Search items by name
+               [::b]T     [white:black:-]Filter items by file type (extension)
+               [::b]a     [white:black:-]Toggle between showing disk usage and apparent size
+               [::b]B     [white:black:-]Toggle bar alignment to biggest file or directory
+               [::b]c     [white:black:-]Show/hide item count
+               [::b]m     [white:black:-]Show/hide latest mtime
+               [::b]b     [white:black:-]Spawn shell in current directory
+               [::b]q     [white:black:-]Quit gdu (asks to confirm after a long scan)
+               [::b]Q     [white:black:-]Quit gdu and print current directory path
+
+During a scan:
+             [::b]tab     [white:black:-]Preview results found so far
+             [::b]esc     [white:black:-]Stop scanning and keep results
+
+Item under cursor:
+               [::b]d     [white:black:-]Delete file or directory
+               [::b]e     [white:black:-]Empty file or directory
+               [::b]D     [white:black:-]Move file or directory to trash
+			   [::b]space [white:black:-]Mark file or directory for deletion
+			   [::b]p     [white:black:-]Print marked items paths to stdout after quitting
+			   [::b]y     [white:black:-]Copy path of file or directory to clipboard
+			   [::b]I     [white:black:-]Ignore file or directory
+               [::b]v     [white:black:-]Show content of file
+               [::b]o     [white:black:-]Open file or directory in external program
+               [::b]i     [white:black:-]Show info about item
+
+Sort by (twice toggles asc/desc):
+               [::b]n     [white:black:-]Sort by name (asc/desc)
+               [::b]s     [white:black:-]Sort by size (asc/desc)
+               [::b]C     [white:black:-]Sort by item count (asc/desc)
+               [::b]M     [white:black:-]Sort by mtime (asc/desc)`
+)
+
+// currentDirLabelText builds the breadcrumb label shown above the table,
+// annotated when a mid-scan preview is being displayed.
+func (ui *UI) currentDirLabelText() string {
+	label := "[::b] --- " +
+		tview.Escape(
+			strings.TrimPrefix(ui.currentDirPath, build.RootPathPrefix),
+		) +
+		" ---"
+	if ui.previewing {
+		label += "  [::b][yellow]scanning… (preview, Tab to resume)[-]"
+	}
+	return label
+}
+
+// followCurrentDirWithCwd moves the process working directory to the directory
+// being shown, when --change-cwd is enabled. The virtual top level dir has no
+// counterpart on disk, so it is skipped.
+func (ui *UI) followCurrentDirWithCwd() {
+	if ui.changeCwdFn == nil || ui.atVirtualRoot() {
+		return
+	}
+
+	if err := ui.changeCwdFn(ui.currentDirPath); err != nil {
+		slog.Warn("changing cwd", "err", err)
+	}
+	slog.Info("changing cwd", "path", ui.currentDirPath)
+}
+
+// nolint: funlen // Why: complex function
+func (ui *UI) showDir() {
+	defer ui.readTree()()
+
+	var (
+		totalUsage int64
+		totalSize  int64
+		maxima     rowMaxima
+		itemCount  int64
+	)
+
+	ui.currentDirPath = ui.currentDir.GetPath()
+
+	ui.followCurrentDirWithCwd()
+
+	ui.currentDirLabel.SetText(ui.currentDirLabelText()).SetDynamicColors(true)
+
+	ui.table.Clear()
+
+	rowIndex := 0
+	ui.parentRowShown = ui.currentDirPath != ui.topDirPath
+	if ui.parentRowShown {
+		prefix := strings.Repeat(" ", ui.columnsWidth())
+
+		cell := tview.NewTableCell(prefix + "[::b]/..")
+
+		// Use the collapsed parent logic to handle navigation back through collapsed paths
+		var collapsedParent fs.Item
+		if ui.collapsePath {
+			collapsedParent = findCollapsedParent(ui.currentDir)
+		} else {
+			collapsedParent = ui.currentDir.GetParent()
+		}
+		cell.SetReference(collapsedParent)
+		cell.SetStyle(tcell.Style{}.Foreground(tcell.ColorDefault))
+		ui.table.SetCell(0, 0, cell)
+		rowIndex++
+	}
+
+	sortBy, sortOrder := ui.getSortParams()
+
+	i := rowIndex
+	maxima = rowMaxima{}
+	for item := range ui.currentDir.GetFiles(sortBy, sortOrder) {
+		if _, ignored := ui.ignoredRows[i]; ignored {
+			i++
+			continue
+		}
+
+		count := fs.DisplayedItemCount(item)
+
+		if ui.ShowRelativeSize {
+			if item.GetUsage() > maxima.usage {
+				maxima.usage = item.GetUsage()
+			}
+			if item.GetSize() > maxima.size {
+				maxima.size = item.GetSize()
+			}
+			if count > maxima.count {
+				maxima.count = count
+			}
+		} else {
+			maxima.size += item.GetSize()
+			maxima.usage += item.GetUsage()
+			maxima.count += count
+		}
+		i++
+	}
+
+	for item := range ui.currentDir.GetFiles(sortBy, sortOrder) {
+		// filter on the label the row actually shows, which for a scanned root
+		// under the virtual top level dir is its absolute path
+		if ui.filterValue != "" && !strings.Contains(
+			strings.ToLower(analyze.ItemDisplayName(ui.currentDir, item)),
+			strings.ToLower(ui.filterValue),
+		) {
+			continue
+		}
+
+		if !ui.matchesTypeFilter(item.GetName(), item.IsDir()) {
+			continue
+		}
+
+		_, ignored := ui.ignoredRows[rowIndex]
+
+		if !ignored {
+			totalUsage += item.GetUsage()
+			totalSize += item.GetSize()
+			itemCount += item.GetItemCount()
+		}
+
+		// Check if this directory can be collapsed
+		var collapsedPath *CollapsedPath
+		if item.IsDir() && ui.collapsePath {
+			collapsedPath = findCollapsiblePath(item)
+		}
+
+		// A collapsed row stands for the deepest directory of the chain: it is
+		// what the row navigates to, and what marking the row marks.
+		reference := item
+		if collapsedPath != nil {
+			reference = collapsedPath.DeepestDir
+		}
+		_, marked := ui.markedItems[reference]
+
+		var cell *tview.TableCell
+		if collapsedPath != nil {
+			cell = tview.NewTableCell(ui.formatCollapsedRow(collapsedPath, maxima, marked, ignored))
+		} else {
+			cell = tview.NewTableCell(ui.formatFileRow(item, maxima, marked, ignored))
+		}
+
+		cell.SetReference(reference)
+
+		switch {
+		case ignored:
+			cell.SetStyle(tcell.Style{}.Foreground(tview.Styles.SecondaryTextColor))
+		case marked:
+			cell.SetStyle(tcell.Style{}.Foreground(ui.markedTextColor))
+			cell.SetBackgroundColor(ui.markedBackgroundColor)
+		default:
+			cell.SetStyle(tcell.Style{}.Foreground(tcell.ColorDefault))
+		}
+
+		ui.table.SetCell(rowIndex, 0, cell)
+		rowIndex++
+	}
+
+	var footerNumberColor, footerTextColor string
+	if ui.UseColors {
+		footerNumberColor = fmt.Sprintf(
+			"[%s:%s:b]",
+			ui.footerNumberColor,
+			ui.footerBackgroundColor,
+		)
+		footerTextColor = fmt.Sprintf(
+			"[%s:%s:-]",
+			ui.footerTextColor,
+			ui.footerBackgroundColor,
+		)
+	} else {
+		footerNumberColor = "[black:white:b]"
+		footerTextColor = blackOnWhite
+	}
+
+	selected := ""
+	if len(ui.markedItems) > 0 {
+		selected = " Selected items: " + footerNumberColor +
+			strconv.Itoa(len(ui.markedItems)) + footerTextColor
+	}
+
+	timeFilterText := ui.formatTimeFilterInfo()
+
+	typeFilterText := ui.formatTypeFilterInfo(footerNumberColor, footerTextColor)
+
+	ui.footerLabel.SetText(
+		selected + footerTextColor +
+			" Total disk usage: " +
+			footerNumberColor +
+			ui.formatSize(totalUsage, true, false) +
+			" Apparent size: " +
+			footerNumberColor +
+			ui.formatSize(totalSize, true, false) +
+			" Items: " + footerNumberColor + fmt.Sprintf("%d", itemCount) +
+			footerTextColor +
+			" Sorting by: " + ui.sortBy + " " + ui.sortOrder +
+			typeFilterText +
+			timeFilterText)
+
+	ui.table.Select(0, 0)
+	ui.table.ScrollToBeginning()
+
+	if !ui.filtering && !ui.typeFiltering {
+		ui.app.SetFocus(ui.table)
+	}
+}
+
+func (ui *UI) showDevices() {
+	var totalUsage int64
+
+	ui.table.Clear()
+	ui.parentRowShown = false
+	ui.table.SetCell(0, 0, tview.NewTableCell("Device name").SetSelectable(false))
+	ui.table.SetCell(0, 1, tview.NewTableCell("Size").SetSelectable(false))
+	ui.table.SetCell(0, 2, tview.NewTableCell("Used").SetSelectable(false))
+	ui.table.SetCell(0, 3, tview.NewTableCell("Used part").SetSelectable(false))
+	ui.table.SetCell(0, 4, tview.NewTableCell("Free").SetSelectable(false))
+	ui.table.SetCell(0, 5, tview.NewTableCell("Mount point").SetSelectable(false))
+
+	var textColor, sizeColor string
+	if ui.UseColors {
+		textColor = "[#3498db:-:b]"
+		sizeColor = "[#edb20a:-:b]"
+	} else {
+		textColor = "[white:-:b]"
+		sizeColor = "[white:-:b]"
+	}
+
+	ui.sortDevices()
+
+	for i, device := range ui.devices {
+		totalUsage += device.GetUsage()
+		ui.table.SetCell(i+1, 0, tview.NewTableCell(textColor+device.Name).SetReference(ui.devices[i]))
+		ui.table.SetCell(i+1, 1, tview.NewTableCell(ui.formatSize(device.Size, false, true)))
+		ui.table.SetCell(i+1, 2, tview.NewTableCell(sizeColor+ui.formatSize(device.Size-device.Free, false, true)))
+		ui.table.SetCell(i+1, 3, tview.NewTableCell(getDeviceUsagePart(device, ui.useOldSizeBar)))
+		ui.table.SetCell(i+1, 4, tview.NewTableCell(ui.formatSize(device.Free, false, true)))
+		ui.table.SetCell(i+1, 5, tview.NewTableCell(textColor+device.MountPoint).SetReference(ui.devices[i]))
+	}
+
+	var footerNumberColor, footerTextColor string
+	if ui.UseColors {
+		footerNumberColor = fmt.Sprintf(
+			"[%s:%s:b]",
+			ui.footerNumberColor,
+			ui.footerBackgroundColor,
+		)
+		footerTextColor = fmt.Sprintf(
+			"[%s:%s:-]",
+			ui.footerTextColor,
+			ui.footerBackgroundColor,
+		)
+	} else {
+		footerNumberColor = "[black:white:b]"
+		footerTextColor = blackOnWhite
+	}
+
+	ui.footerLabel.SetText(
+		" Total usage: " +
+			footerNumberColor +
+			ui.formatSize(totalUsage, true, false) +
+			footerTextColor +
+			" Sorting by: " + ui.sortBy + " " + ui.sortOrder)
+
+	ui.table.Select(1, 0)
+	ui.table.SetSelectedFunc(ui.deviceItemSelected)
+
+	if ui.topDirPath != "" {
+		for i, device := range ui.devices {
+			if device.MountPoint == ui.topDirPath {
+				ui.table.Select(i+1, 0)
+				break
+			}
+		}
+	}
+}
+
+func (ui *UI) showErr(msg string, err error) {
+	text := msg
+	if err != nil {
+		text += ": " + err.Error()
+	}
+
+	modal := tview.NewModal().
+		SetText(text).
+		AddButtons([]string{"ok"}).
+		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+			ui.pages.RemovePage("error")
+		})
+
+	if !ui.UseColors {
+		modal.SetBackgroundColor(tcell.ColorGray)
+	}
+
+	ui.pages.AddPage("error", modal, true, true)
+	ui.app.SetFocus(modal)
+}
+
+func (ui *UI) showErrFromGo(msg string, err error) {
+	ui.app.QueueUpdateDraw(func() {
+		ui.showErr(msg, err)
+	})
+}
+
+// messageTimeout is how long a transient status message stays in the header.
+const messageTimeout = 2 * time.Second
+
+// showMessage briefly replaces the header text with a status message and
+// restores the previous text afterwards.
+func (ui *UI) showMessage(message string) {
+	previousText := ui.header.GetText(false)
+	ui.header.SetText(message)
+
+	go func() {
+		time.Sleep(messageTimeout)
+		ui.app.QueueUpdateDraw(func() {
+			ui.header.Clear()
+			ui.header.SetText(previousText)
+		})
+	}()
+}
+
+func (ui *UI) showHelp() {
+	text := tview.NewTextView().SetDynamicColors(true)
+	text.SetBorder(true).SetBorderPadding(2, 2, 2, 2)
+	text.SetBorderColor(tcell.ColorDefault)
+	text.SetTitle(" gdu help ")
+	text.SetScrollable(true)
+
+	formattedHelpText := ui.formatHelpTextFor()
+	text.SetText(formattedHelpText)
+
+	maxHeight := strings.Count(formattedHelpText, "\n") + 7
+	_, height := ui.screen.Size()
+	if height > maxHeight {
+		height = maxHeight
+	}
+
+	flex := tview.NewFlex().
+		AddItem(nil, 0, 1, false).
+		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
+			AddItem(nil, 0, 1, false).
+			AddItem(text, height, 1, false).
+			AddItem(nil, 0, 1, false), 80, 1, false).
+		AddItem(nil, 0, 1, false)
+
+	ui.help = flex
+	ui.pages.AddPage("help", flex, true, true)
+	ui.app.SetFocus(text)
+}
+
+func (ui *UI) formatHelpTextFor() string {
+	lines := strings.Split(helpText, "\n")
+
+	for i, line := range lines {
+		if ui.UseColors {
+			lines[i] = strings.ReplaceAll(
+				strings.ReplaceAll(line, defaultColorBold, "[red]"),
+				whiteOnBlack,
+				"[white]",
+			)
+		}
+
+		isFound := (strings.Contains(line, "Empty file or directory") ||
+			strings.Contains(line, "Delete file or directory") ||
+			strings.Contains(line, "Move file or directory to trash"))
+
+		if ui.noDelete && isFound {
+			lines[i] += helpDisabledSuffix
+		} else if ui.noDeleteWithFilter && isFound {
+			lines[i] += " (disabled/filter)"
+		}
+
+		if ui.noSpawnShell && (strings.Contains(line, "Spawn shell in current directory") ||
+			strings.Contains(line, "Open file or directory in external program")) {
+			lines[i] += helpDisabledSuffix
+		}
+
+		if ui.noViewFile && strings.Contains(line, "Show content of file") {
+			lines[i] += helpDisabledSuffix
+		}
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func (ui *UI) formatTypeFilterInfo(numberColor, textColor string) string {
+	if ui.typeFilterValue == "" {
+		return ""
+	}
+	return " Type filter: " + numberColor + ui.typeFilterValue + textColor
+}

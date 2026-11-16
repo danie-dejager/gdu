@@ -1,0 +1,280 @@
+package analyze
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"slices"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/dundee/gdu/v6/pkg/fs"
+)
+
+func init() {
+	slog.SetLogLoggerLevel(slog.LevelWarn)
+}
+
+func TestReadAnalysis(t *testing.T) {
+	buff := bytes.NewBuffer([]byte(`
+		[1,2,{"progname":"gdu","progver":"development","timestamp":1626806293},
+		[{"name":"/home/xxx","asize":47000000,"dsize":64000000,"items":6,"mtime":1629333600},
+		{"name":"gdu.json","asize":33805233,"dsize":33808384},
+		{"name":"sock","notreg":true},
+		[{"name":"app","asize":10022,"dsize":20480,"items":4},
+		{"name":"app.go","asize":4638,"dsize":8192},
+		{"name":"app_linux_test.go","asize":1410,"dsize":4096},
+		{"name":"app_linux_test2.go","ino":1234,"hlnkc":true,"asize":1410,"dsize":4096},
+		{"name":"app_test.go","asize":4974,"dsize":8192}],
+		{"name":"main.go","asize":3205,"dsize":4096,"mtime":1629333600}]]
+	`))
+
+	dir, err := ReadAnalysis(buff)
+
+	assert.Nil(t, err)
+	assert.Equal(t, "xxx", dir.GetName())
+	assert.Equal(t, "/home/xxx", dir.GetPath())
+	assert.Equal(t, int64(47000000), dir.GetSize())
+	assert.Equal(t, int64(64000000), dir.GetUsage())
+	assert.Equal(t, int64(6), dir.GetItemCount())
+	assert.Equal(t, int64(10022), dir.Files[2].GetSize())
+	assert.Equal(t, int64(20480), dir.Files[2].GetUsage())
+	assert.Equal(t, int64(4), dir.Files[2].GetItemCount())
+	alt2 := dir.Files[2].(*Dir).Files[2].(*File)
+	assert.Equal(t, "app_linux_test2.go", alt2.Name)
+	assert.Equal(t, uint64(1234), alt2.Mli)
+	assert.Equal(t, 'H', alt2.Flag)
+}
+
+func TestReadAnalysisPreservesTruncatedDirectoryStats(t *testing.T) {
+	input := bytes.NewBufferString(`
+		[1,2,{"progname":"gdu","progver":"development","timestamp":0},
+		[{"name":"/root","asize":4096,"dsize":4096,"items":3},
+		[{"name":"summary","asize":4096,"dsize":4096,"items":2}]]]
+	`)
+
+	dir, err := ReadAnalysis(input)
+	assert.NoError(t, err)
+	dir.UpdateStats(false)
+
+	assert.Equal(t, int64(4096), dir.GetSize())
+	assert.Equal(t, int64(4096), dir.GetUsage())
+	assert.Equal(t, int64(3), dir.GetItemCount())
+	summary := dir.Files[0].(*Dir)
+	assert.Equal(t, int64(4096), summary.GetSize())
+	assert.Equal(t, int64(4096), summary.GetUsage())
+	assert.Equal(t, int64(2), summary.GetItemCount())
+	dir.UpdateStats(true)
+	assert.Equal(t, int64(4096), dir.GetSize())
+	assert.Equal(t, int64(4096), dir.GetUsage())
+	assert.Equal(t, int64(3), dir.GetItemCount())
+}
+
+func TestReadAnalysisRecomputesEmptyDirStats(t *testing.T) {
+	input := bytes.NewBufferString(`
+		[1,2,{"progname":"gdu","progver":"development","timestamp":0},
+		[{"name":"/empty","asize":512,"dsize":0,"items":1}]]
+	`)
+
+	dir, err := ReadAnalysis(input)
+	assert.NoError(t, err)
+	dir.UpdateStats(false)
+
+	assert.Equal(t, int64(512), dir.GetSize())
+	assert.Equal(t, int64(0), dir.GetUsage())
+	assert.Equal(t, int64(1), dir.GetItemCount())
+}
+
+// A directory's exported dsize includes the blocks of the directory itself,
+// which must survive recomputing the stats after import.
+func TestReadAnalysisKeepsDirOwnUsage(t *testing.T) {
+	input := bytes.NewBufferString(`
+		[1,2,{"progname":"gdu","progver":"development","timestamp":0},
+		[{"name":"/root","asize":1536,"dsize":20480,"items":5},
+		{"name":"a","asize":1,"dsize":4096},
+		[{"name":"sub","asize":1,"dsize":8192,"items":2},
+		{"name":"b","asize":1,"dsize":4096}],
+		[{"name":"empty","asize":512,"dsize":4096,"items":1}]]]
+	`)
+
+	dir, err := ReadAnalysis(input)
+	assert.NoError(t, err)
+	dir.UpdateStats(false)
+
+	assert.Equal(t, int64(20480), dir.GetUsage())
+	assert.Equal(t, int64(5), dir.GetItemCount())
+	sub := dir.Files[1].(*Dir)
+	assert.Equal(t, int64(8192), sub.GetUsage())
+	empty := dir.Files[2].(*Dir)
+	assert.Equal(t, int64(4096), empty.GetUsage())
+	assert.Equal(t, int64(512), empty.GetSize())
+	assert.Equal(t, int64(1), empty.GetItemCount())
+}
+
+// A depth-truncated directory that held real content exports with items >= 2,
+// so even when its apparent size coincides with the empty-dir placeholder its
+// stats must be preserved (not recomputed to zero). This pins the items == 1
+// discriminator in HasEmptyDirPlaceholderStats as intentional.
+func TestReadAnalysisPreservesTruncatedDirWithPlaceholderSize(t *testing.T) {
+	input := bytes.NewBufferString(`
+		[1,2,{"progname":"gdu","progver":"development","timestamp":0},
+		[{"name":"/root","asize":1024,"dsize":0,"items":3},
+		[{"name":"truncated","asize":512,"dsize":0,"items":2}]]]
+	`)
+
+	dir, err := ReadAnalysis(input)
+	assert.NoError(t, err)
+	dir.UpdateStats(false)
+
+	truncated := dir.Files[0].(*Dir)
+	assert.Equal(t, int64(512), truncated.GetSize())
+	assert.Equal(t, int64(0), truncated.GetUsage())
+	assert.Equal(t, int64(2), truncated.GetItemCount())
+}
+
+func TestReadAnalysisWithEmptyInput(t *testing.T) {
+	buff := bytes.NewBuffer([]byte(``))
+
+	_, err := ReadAnalysis(buff)
+
+	assert.Equal(t, "unexpected end of JSON input", err.Error())
+}
+
+func TestReadAnalysisWithEmptyDict(t *testing.T) {
+	buff := bytes.NewBuffer([]byte(`{}`))
+
+	_, err := ReadAnalysis(buff)
+
+	assert.Equal(t, "JSON file does not contain top level array", err.Error())
+}
+
+func TestReadFromBrokenInput(t *testing.T) {
+	_, err := ReadAnalysis(&BrokenInput{})
+
+	assert.Equal(t, "IO error", err.Error())
+}
+
+func TestReadAnalysisWithEmptyArray(t *testing.T) {
+	buff := bytes.NewBuffer([]byte(`[]`))
+
+	_, err := ReadAnalysis(buff)
+
+	assert.Equal(t, "top level array must have at least 4 items", err.Error())
+}
+
+func TestReadAnalysisWithWrongContent(t *testing.T) {
+	buff := bytes.NewBuffer([]byte(`[1,2,3,4]`))
+
+	_, err := ReadAnalysis(buff)
+
+	assert.Equal(t, "array of maps not found in the top level array on 4th position", err.Error())
+}
+
+func TestReadAnalysisWithEmptyContent(t *testing.T) {
+	buff := bytes.NewBuffer([]byte(`[1,2,3,[]]`))
+
+	_, err := ReadAnalysis(buff)
+
+	assert.Equal(t, "directory array is empty", err.Error())
+}
+
+func TestReadAnalysisWithEmptyDirContent(t *testing.T) {
+	buff := bytes.NewBuffer([]byte(`[1,2,3,[{}]]`))
+
+	_, err := ReadAnalysis(buff)
+
+	assert.Equal(t, "directory name is not a string", err.Error())
+}
+
+func TestReadAnalysisWithWrongDirItem(t *testing.T) {
+	buff := bytes.NewBuffer([]byte(`[1,2,3,[1, 2, 3]]`))
+
+	_, err := ReadAnalysis(buff)
+
+	assert.Equal(t, "directory item is not a map", err.Error())
+}
+
+func TestReadAnalysisWithWrongName(t *testing.T) {
+	buff := bytes.NewBuffer([]byte(`[1,2,3,[{"name":"/"},{"name":42}]]`))
+
+	_, err := ReadAnalysis(buff)
+
+	assert.Equal(t, "file name is not a string", err.Error())
+}
+
+func TestReadAnalysisWithWrongSubdirItem(t *testing.T) {
+	buff := bytes.NewBuffer([]byte(`[1,2,3,[{"name":"xxx"}, [1,2,3]]]`))
+
+	_, err := ReadAnalysis(buff)
+
+	assert.Equal(t, "xxx: directory item is not a map", err.Error())
+}
+
+// An export may come from anywhere: a name that is no single name would give
+// its item the path of another, which deleting it would remove.
+func TestReadAnalysisRefusesNamesThatAreNoSingleName(t *testing.T) {
+	for _, name := range []string{"..", ".", "", "../../etc/passwd", "a/b", "/etc"} {
+		quoted, err := json.Marshal(name)
+		require.NoError(t, err)
+
+		for _, doc := range []string{
+			`[1,2,3,[{"name":"/home/user"},[{"name":"sub"},{"name":` + string(quoted) + `}]]]`,
+			`[1,2,3,[{"name":"/home/user"},[{"name":"sub"},[{"name":` + string(quoted) + `}]]]]`,
+		} {
+			_, err := ReadAnalysis(bytes.NewBufferString(doc))
+
+			require.Error(t, err, doc)
+			assert.Contains(t, err.Error(), "/home/user/sub: invalid", doc)
+		}
+	}
+}
+
+// The top directory is named by its path, as gdu and ncdu export it.
+func TestReadAnalysisNamesTheTopDirectoryByItsPath(t *testing.T) {
+	dir, err := ReadAnalysis(bytes.NewBufferString(`[1,2,3,[{"name":"/home/user"},[{"name":"sub"},{"name":"f"}]]]`))
+
+	require.NoError(t, err)
+	assert.Equal(t, "/home/user", dir.GetPath())
+	sub := dir.Files[0]
+	assert.Equal(t, "/home/user/sub", sub.GetPath())
+	assert.Equal(t, "/home/user/sub/f", slices.Collect(sub.GetFiles(fs.SortByName, fs.SortAsc))[0].GetPath())
+}
+
+type BrokenInput struct{}
+
+func (i *BrokenInput) Read(p []byte) (n int, err error) {
+	return 0, errors.New("IO error")
+}
+
+func TestReadAnalysisReadError(t *testing.T) {
+	buff := bytes.NewBuffer([]byte(`
+		[1,2,{"progname":"gdu","progver":"development","timestamp":1626806293},
+		[{"name":"/home/xxx"},
+		[{"name":"locked","read_error":true}],
+		[{"name":"fine"}]]]
+	`))
+
+	dir, err := ReadAnalysis(buff)
+
+	assert.Nil(t, err)
+	assert.Equal(t, '!', dir.Files[0].GetFlag())
+	assert.Equal(t, ' ', dir.Files[1].GetFlag())
+}
+
+func TestReadAnalysisSharedUsage(t *testing.T) {
+	buff := bytes.NewBuffer([]byte(`
+		[1,2,{"progname":"gdu","progver":"development","timestamp":1626806293},
+		[{"name":"/home/xxx","asize":8192,"dsize":4096,"items":2},
+		{"name":"clone","asize":8192,"dsize":4096,"shsize":4096}]]
+	`))
+
+	dir, err := ReadAnalysis(buff)
+
+	assert.Nil(t, err)
+	clone := dir.Files[0].(*File)
+	assert.Equal(t, int64(4096), clone.Usage)
+	assert.Equal(t, int64(4096), clone.SharedUsage)
+}

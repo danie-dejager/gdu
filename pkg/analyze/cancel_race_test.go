@@ -1,25 +1,20 @@
 package analyze
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
 
-	"github.com/dundee/gdu/v5/internal/common"
-	"github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/pkg/fs"
 	"github.com/stretchr/testify/require"
 )
 
-type cancelRaceAnalyzer interface {
-	common.Analyzer
-	IsCancelled() bool
-}
-
 type cancelRaceAnalyzerFactory struct {
 	name string
-	new  func(*testing.T) cancelRaceAnalyzer
+	new  func(*testing.T) Analyzer
 }
 
 func TestCancelPreemptiveAnalyzers(t *testing.T) {
@@ -28,12 +23,12 @@ func TestCancelPreemptiveAnalyzers(t *testing.T) {
 	for _, factory := range cancelRaceAnalyzerFactories() {
 		t.Run(factory.name, func(t *testing.T) {
 			analyzer := factory.new(t)
-			analyzer.Cancel()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
 
-			dir := analyzer.AnalyzeDir(root, func(string, string) bool { return false }, nil)
+			dir := analyzer.AnalyzeDir(ctx, root, Options{})
 
 			require.NotNil(t, dir)
-			require.True(t, analyzer.IsCancelled())
 			var children int
 			for range dir.GetFiles(fs.SortByName, fs.SortAsc) {
 				children++
@@ -61,9 +56,11 @@ func TestCancelWhileAnalyzingAnalyzers(t *testing.T) {
 				return false
 			}
 
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 			result := make(chan fs.Item, 1)
 			go func() {
-				result <- analyzer.AnalyzeDir(root, ignore, nil)
+				result <- analyzer.AnalyzeDir(ctx, root, Options{IgnoreDir: ignore})
 			}()
 
 			select {
@@ -71,13 +68,12 @@ func TestCancelWhileAnalyzingAnalyzers(t *testing.T) {
 			case <-time.After(10 * time.Second):
 				t.Fatal("analyzer did not reach the blocked root entry")
 			}
-			analyzer.Cancel()
+			cancel()
 			close(release)
 
 			select {
 			case dir := <-result:
 				require.NotNil(t, dir)
-				require.True(t, analyzer.IsCancelled())
 				require.NotContains(t, itemNames(dir), "1")
 			case <-time.After(10 * time.Second):
 				t.Fatal("analyzer did not finish after cancellation")
@@ -88,19 +84,18 @@ func TestCancelWhileAnalyzingAnalyzers(t *testing.T) {
 
 func cancelRaceAnalyzerFactories() []cancelRaceAnalyzerFactory {
 	return []cancelRaceAnalyzerFactory{
-		{name: "parallel", new: func(*testing.T) cancelRaceAnalyzer { return CreateAnalyzer() }},
-		{name: "stable", new: func(*testing.T) cancelRaceAnalyzer { return CreateStableOrderAnalyzer() }},
-		{name: "sequential", new: func(*testing.T) cancelRaceAnalyzer { return CreateSeqAnalyzer() }},
-		{name: "stored", new: func(t *testing.T) cancelRaceAnalyzer {
-			return CreateStoredAnalyzer(filepath.Join(t.TempDir(), "results.badger"))
+		{name: "parallel", new: func(*testing.T) Analyzer { return CreateAnalyzer() }},
+		{name: "sequential", new: func(*testing.T) Analyzer { return CreateSeqAnalyzer() }},
+		{name: "stored", new: func(t *testing.T) Analyzer {
+			return createStoredAnalyzer(filepath.Join(t.TempDir(), "results.badger"))
 		}},
-		{name: "sqlite", new: func(t *testing.T) cancelRaceAnalyzer {
-			analyzer, err := CreateSqliteAnalyzer(filepath.Join(t.TempDir(), "results.sqlite"))
+		{name: "sqlite", new: func(t *testing.T) Analyzer {
+			analyzer, err := createSqliteAnalyzer(filepath.Join(t.TempDir(), "results.sqlite"))
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, analyzer.storage.Close()) })
 			return analyzer
 		}},
-		{name: "top-dir", new: func(*testing.T) cancelRaceAnalyzer { return CreateTopDirAnalyzer() }},
+		{name: "top-dir", new: func(*testing.T) Analyzer { return CreateTopDirAnalyzer() }},
 	}
 }
 

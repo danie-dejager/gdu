@@ -26,6 +26,13 @@ A scan the user told to schedule no new work, whose results found so far are
 kept and browsed as if the scan had finished. Distinct from an abandoned scan,
 where the user quits gdu and the results are discarded.
 
+## Stored analysis
+
+The analysis of a scanned root kept in a database, which a later run loads
+instead of scanning again. It is **complete**, **stopped** (that of a stopped
+scan, kept like one), or **incomplete**: its scan never ended, as when gdu was
+killed, or failed to store part of it. An incomplete analysis is not loaded.
+
 ## Apparent size
 
 The size an item claims to be, i.e. the length of its contents.
@@ -45,6 +52,14 @@ The part of a file's disk usage that it does not share with any other file
 (through reflinks, deduplication or snapshots), i.e. what deleting it would
 free. When asked for, it takes the place of disk usage everywhere disk usage
 is shown. The rest of the file's data is its **shared size**.
+
+## Hard-linked file
+
+A file reachable through several links, identified by its device and inode
+number together, as inode numbers repeat across filesystems. Every link is an
+item of its own, but the file's size and disk usage are counted once in the
+totals, through the first link met. Removing a link frees nothing while
+another is left; the file is then counted through the next one.
 
 ## Displayed item count
 

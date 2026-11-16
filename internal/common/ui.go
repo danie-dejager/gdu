@@ -4,15 +4,20 @@ package common
 
 import (
 	"os"
-	"regexp"
 	"strconv"
+	"time"
+
+	"github.com/dundee/gdu/v6/internal/config"
+	"github.com/dundee/gdu/v6/internal/ignore"
+	"github.com/dundee/gdu/v6/pkg/analyze"
 )
 
-// UI struct
+// UI is what the frontends share: the analyzer, what a scan leaves out and
+// how sizes are shown.
 type UI struct {
-	Analyzer               Analyzer
+	Analyzer               analyze.Analyzer
 	IgnoreDirPaths         map[string]struct{}
-	IgnoreDirPathPatterns  *regexp.Regexp
+	IgnoreDirPathPatterns  *ignore.Pattern
 	IgnoreHidden           bool
 	IgnoreOtherFilesystems bool
 	IgnoreTypes            []string
@@ -23,43 +28,60 @@ type UI struct {
 	ShowApparentSize       bool
 	ShowRelativeSize       bool
 	FilteringFiles         bool
-	// regex fragments contributed by every pattern source (-I, -X, -G),
-	// kept so that a later source can be combined with the earlier ones
-	// instead of replacing them
-	ignorePatternFragments []string
 	blockSize              int64
 	blockSuffix            string
+	// otherDevices are the mount points of other devices below the device
+	// scanned, see IgnoreOtherDevices
+	otherDevices map[string]struct{}
+	// scan settings, see analyze.Options
+	followSymlinks  bool
+	exclusiveSize   bool
+	annexedSize     bool
+	archiveBrowsing bool
+	timeFilter      analyze.TimeFilter
 }
 
-// SetAnalyzer sets analyzer instance
-func (ui *UI) SetAnalyzer(a Analyzer) {
-	ui.Analyzer = a
+// NewUI returns the state the frontends share for the settings s, scanning
+// with analyzer.
+func NewUI(analyzer analyze.Analyzer, s *config.Settings) *UI {
+	ui := &UI{
+		Analyzer:               analyzer,
+		IgnoreDirPaths:         ignoreDirPathSet(s.Scan.IgnoreDirs),
+		IgnoreDirPathPatterns:  s.Scan.IgnoreDirPattern,
+		IgnoreHidden:           s.Scan.IgnoreHidden,
+		IgnoreOtherFilesystems: s.Scan.IgnoreOtherFilesystems,
+		IgnoreTypes:            s.Scan.ExcludeTypes,
+		IncludeTypes:           s.Scan.IncludeTypes,
+		UseColors:              s.Display.Colors,
+		UseSIPrefix:            s.Display.SIPrefix,
+		ShowProgress:           s.Display.Progress,
+		ShowApparentSize:       s.Display.ApparentSize,
+		ShowRelativeSize:       s.Display.RelativeSize,
+		followSymlinks:         s.Scan.FollowSymlinks,
+		exclusiveSize:          s.Scan.ExclusiveSize,
+		annexedSize:            s.Scan.AnnexedSize,
+		archiveBrowsing:        s.Scan.ArchiveBrowsing,
+	}
+	if filter, loc := s.Scan.TimeFilter, s.Scan.TimeLocation; filter != nil {
+		ui.timeFilter = func(mtime time.Time) bool {
+			return filter.IncludeByTimeFilter(mtime, loc)
+		}
+		ui.FilteringFiles = true
+	}
+	return ui
 }
 
-// SetFollowSymlinks sets whether symlinks to files should be followed
-func (ui *UI) SetFollowSymlinks(v bool) {
-	ui.Analyzer.SetFollowSymlinks(v)
-}
-
-// SetExclusiveSize sets whether file usage is the bytes not shared with other files
-func (ui *UI) SetExclusiveSize(v bool) {
-	ui.Analyzer.SetExclusiveSize(v)
-}
-
-// SetShowAnnexedSize sets whether to use annexed size of git-annex files
-func (ui *UI) SetShowAnnexedSize(v bool) {
-	ui.Analyzer.SetShowAnnexedSize(v)
-}
-
-// SetTimeFilter sets the time filter function for file inclusion
-func (ui *UI) SetTimeFilter(timeFilter TimeFilter) {
-	ui.Analyzer.SetTimeFilter(timeFilter)
-	ui.FilteringFiles = true
-}
-
-// SetArchiveBrowsing sets whether browsing of zip/jar archives is enabled
-func (ui *UI) SetArchiveBrowsing(v bool) {
-	ui.Analyzer.SetArchiveBrowsing(v)
+// ScanOptions returns the options of a scan with the current settings.
+func (ui *UI) ScanOptions() analyze.Options {
+	return analyze.Options{
+		IgnoreDir:       ui.CreateIgnoreFunc(),
+		IgnoreFile:      ui.CreateFileTypeFilter(),
+		TimeFilter:      ui.timeFilter,
+		FollowSymlinks:  ui.followSymlinks,
+		AnnexedSize:     ui.annexedSize,
+		ExclusiveSize:   ui.exclusiveSize,
+		ArchiveBrowsing: ui.archiveBrowsing,
+	}
 }
 
 // SetBlockSizeFromEnvironment applies the BLOCK_SIZE or BLOCKSIZE output format.

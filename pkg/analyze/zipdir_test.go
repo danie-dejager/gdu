@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/pkg/fs"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -84,23 +84,6 @@ func TestProcessZipFile(t *testing.T) {
 
 	assert.True(t, foundTextFile, "should find test.txt file")
 	assert.True(t, foundSubdir, "should find subdir directory")
-}
-
-func TestGetZipFileSize(t *testing.T) {
-	// Create temporary zip file
-	tempDir := t.TempDir()
-	zipPath := filepath.Join(tempDir, "test.zip")
-
-	// Create zip file
-	createTestZipFile(t, zipPath)
-
-	// Get size
-	uncompressed, compressed, err := getZipFileSize(zipPath)
-	assert.NoError(t, err)
-	assert.Greater(t, uncompressed, int64(0))
-	assert.Greater(t, compressed, int64(0))
-	// Note: for small files, compressed size might be larger
-	t.Logf("Uncompressed size: %d, Compressed size: %d", uncompressed, compressed)
 }
 
 func TestEnsureZipDirExists(t *testing.T) {

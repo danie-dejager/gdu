@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	gfs "github.com/dundee/gdu/v5/pkg/fs"
+	gfs "github.com/dundee/gdu/v6/pkg/fs"
 )
 
 // parseJSONAttributes parses the comma-separated --output-attrs value into the
@@ -19,7 +19,7 @@ func parseJSONAttributes(value string) (gfs.JSONAttributes, error) {
 	for _, attribute := range strings.Split(value, ",") {
 		attribute = strings.TrimSpace(attribute)
 		switch attribute {
-		case "name", "asize", "dsize", "shsize", "items", "mtime", "notreg", "ino":
+		case "name", "asize", "dsize", "shsize", "items", "mtime", "notreg", "ino", "dev":
 			attributes[attribute] = struct{}{}
 		default:
 			return nil, fmt.Errorf("unknown JSON output attribute %q", attribute)

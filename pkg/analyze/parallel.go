@@ -1,18 +1,15 @@
 package analyze
 
 import (
+	"context"
 	"os"
 	"path/filepath"
-	"runtime"
+	"sync"
 
-	"github.com/dundee/gdu/v5/internal/common"
-	"github.com/dundee/gdu/v5/pkg/fs"
-	log "github.com/sirupsen/logrus"
+	"github.com/dundee/gdu/v6/pkg/fs"
 )
 
-var concurrencyLimit = make(chan struct{}, 2*runtime.GOMAXPROCS(0))
-
-var _ common.Analyzer = (*ParallelAnalyzer)(nil)
+var _ Analyzer = (*ParallelAnalyzer)(nil)
 
 // ParallelAnalyzer implements Analyzer
 type ParallelAnalyzer struct {
@@ -27,189 +24,99 @@ func CreateAnalyzer() *ParallelAnalyzer {
 }
 
 // AnalyzeDir analyzes given path
-func (a *ParallelAnalyzer) AnalyzeDir(
-	path string, ignore common.ShouldDirBeIgnored, fileTypeFilter common.ShouldFileBeIgnored,
-) fs.Item {
-	a.ignoreDir = ignore
-	a.ignoreFileType = fileTypeFilter
-
-	go a.UpdateProgress()
-	dir := a.processDir(path)
-
-	dir.BasePath = filepath.Dir(path)
-	a.setCurrentDir(dir)
-	a.wait.Wait()
-
-	a.progressDoneChan <- struct{}{}
-	a.doneChan.Broadcast()
-
-	return dir
+func (a *ParallelAnalyzer) AnalyzeDir(ctx context.Context, path string, opts Options) Node {
+	return a.analyzeTree(ctx, path, opts, true)
 }
 
-func (a *ParallelAnalyzer) processQueuedDir(path string, parent *Dir, result chan<- *Dir) {
-	concurrencyLimit <- struct{}{}
-	if a.IsCancelled() {
-		<-concurrencyLimit
-		result <- nil
-		return
-	}
-
-	subdir := a.processDir(path)
-	subdir.Parent = parent
-	<-concurrencyLimit
-	result <- subdir
+// analyzeTree scans path into an in-memory tree, in parallel or in sequence.
+func (a *BaseAnalyzer) analyzeTree(ctx context.Context, path string, opts Options, parallel bool) Node {
+	s := a.begin(ctx, opts)
+	return walkTree[*Dir](a, s, newTreeSink(a), path, parallel)
 }
 
-func addSubDir(parent, child *Dir) {
-	if child != nil {
-		parent.AddFile(child)
-	}
+// treeSink builds the in-memory tree of a scan. A directory is added to its
+// parent once it is complete; the root can be previewed during the scan.
+type treeSink struct {
+	a       *BaseAnalyzer
+	preview *preview
 }
 
-func (a *ParallelAnalyzer) processDir(path string) *Dir {
-	var (
-		file       fs.Item
-		err        error
-		totalUsage int64
-		info       os.FileInfo
-		subDirChan = make(chan *Dir)
-		dirCount   int
-	)
+func newTreeSink(a *BaseAnalyzer) *treeSink {
+	return &treeSink{a: a, preview: &preview{}}
+}
 
-	a.wait.Add(1)
-
-	files, err := os.ReadDir(path)
-	if err != nil {
-		log.Print(err.Error())
+// shared returns the lock to hold while changing dir: the preview's for the
+// root, which the preview reads, and none for any other directory, which is
+// changed only by the goroutine walking it until it is complete.
+func (s *treeSink) shared(dir *Dir) sync.Locker {
+	if dir == s.preview.root {
+		return &s.preview.mu
 	}
+	return noLock{}
+}
 
+func (s *treeSink) openDir(parent *Dir, path string, root bool) (*Dir, bool) {
 	dir := &Dir{
-		File: &File{
-			Name: filepath.Base(path),
-			Flag: getDirFlag(err, len(files)),
-		},
+		File:      &File{Name: filepath.Base(path)},
 		ItemCount: 1,
-		Files:     make(fs.Files, 0, len(files)),
 	}
-	setDirPlatformSpecificAttrs(dir, path)
-
-	for _, f := range files {
-		if a.IsCancelled() {
-			break
-		}
-		name := f.Name()
-		entryPath := filepath.Join(path, name)
-		if f.IsDir() {
-			if a.shouldSkipDir(name, entryPath) {
-				continue
-			}
-			dirCount++
-
-			go a.processQueuedDir(entryPath, dir, subDirChan)
-		} else {
-			// Apply file type filter if set
-			if a.ignoreFileType != nil && a.ignoreFileType(name) {
-				continue // Skip this file
-			}
-
-			info, err = f.Info()
-			if err != nil {
-				log.Print(err.Error())
-				dir.SetFlag('!')
-				continue
-			}
-
-			if a.followSymlinks && info.Mode()&os.ModeSymlink != 0 {
-				infoF, err := followSymlink(entryPath, a.gitAnnexedSize)
-				if err != nil {
-					log.Print(err.Error())
-					dir.SetFlag('!')
-					continue
-				}
-				if infoF != nil {
-					info = infoF
-				}
-			}
-
-			symlinkTarget := readSymlinkTarget(f.Type(), entryPath)
-
-			// Apply time filter if set
-			if a.matchesTimeFilterFn != nil && !a.matchesTimeFilterFn(info.ModTime()) {
-				continue // Skip this file
-			}
-
-			switch {
-			case a.archiveBrowsing && isZipFile(name):
-				zipDir, err := processZipFile(entryPath, info)
-				if err != nil {
-					log.Printf("Failed to process zip file %s: %v", entryPath, err)
-					file = &File{
-						Name:   name,
-						Flag:   getFlag(info),
-						Size:   info.Size(),
-						Parent: dir,
-					}
-				} else {
-					uncompressedSize, compressedSize, err := getZipFileSize(entryPath)
-					if err == nil {
-						zipDir.Size = uncompressedSize
-						zipDir.Usage = compressedSize
-					}
-					zipDir.Parent = dir
-					file = zipDir
-				}
-			case a.archiveBrowsing && isTarFile(name):
-				tarDir, err := processTarFile(entryPath, info)
-				if err != nil {
-					log.Printf("Failed to process tar file %s: %v", entryPath, err)
-					file = &File{
-						Name:   name,
-						Flag:   getFlag(info),
-						Size:   info.Size(),
-						Parent: dir,
-					}
-				} else {
-					tarDir.Parent = dir
-					file = tarDir
-				}
-			default:
-				file = &File{
-					Name:    name,
-					Flag:    getFlag(info),
-					Size:    info.Size(),
-					Parent:  dir,
-					Symlink: symlinkTarget,
-				}
-			}
-
-			if file != nil {
-				// Only set platform-specific attributes for regular files
-				if regularFile, ok := file.(*File); ok {
-					setPlatformSpecificAttrs(regularFile, info, entryPath)
-					regularFile.Usage, regularFile.SharedUsage = a.MeasureSharedUsage(entryPath, info, regularFile.Usage)
-				}
-				totalUsage += file.GetUsage()
-				dir.AddFile(file)
-			}
-		}
+	if root {
+		dir.BasePath = filepath.Dir(path)
+		s.preview.root = dir
+		s.a.setCurrentDir(s.preview)
+	} else {
+		dir.Parent = parent
 	}
-
-	go func() {
-		var sub *Dir
-
-		for range dirCount {
-			sub = <-subDirChan
-			addSubDir(dir, sub)
-		}
-
-		a.wait.Done()
-	}()
-
-	a.progressCurrentItemName.Store(path)
-	a.progressItemCount.Add(int64(len(files)))
-	a.progressTotalUsage.Add(totalUsage)
-	return dir
+	return dir, true
 }
+
+func (s *treeSink) readDir(dir *Dir, path string, err error, entries int) {
+	mtime, ownUsage, dev := dirStats(path)
+	lock := s.shared(dir)
+	lock.Lock()
+	defer lock.Unlock()
+	dir.Flag = getDirFlag(err, entries)
+	dir.Files = make(fs.Files, 0, entries)
+	dir.Mtime, dir.OwnUsage, dir.Dev = mtime, ownUsage, dev
+}
+
+func (*treeSink) resolveOptions(*Dir) resolveOptions {
+	return resolveOptions{browseArchives: true}
+}
+
+func (s *treeSink) addFile(dir *Dir, entry *fileEntry) int64 {
+	item := entry.item(dir)
+	lock := s.shared(dir)
+	lock.Lock()
+	defer lock.Unlock()
+	dir.AddFile(item)
+	return item.GetUsage()
+}
+
+func (s *treeSink) fileError(dir *Dir) {
+	lock := s.shared(dir)
+	lock.Lock()
+	defer lock.Unlock()
+	dir.SetFlag('!')
+}
+
+func (*treeSink) entriesDone(*Dir) {}
+
+func (*treeSink) closeDir(*Dir) {}
+
+// addDir attaches child to its parent, which the goroutines closing its
+// subdirectories may do at once.
+func (s *treeSink) addDir(parent, child *Dir) {
+	s.preview.mu.Lock()
+	defer s.preview.mu.Unlock()
+	parent.AddFile(child)
+}
+
+// noLock is the lock of what no one shares.
+type noLock struct{}
+
+func (noLock) Lock()   {}
+func (noLock) Unlock() {}
 
 func getDirFlag(err error, items int) rune {
 	switch {

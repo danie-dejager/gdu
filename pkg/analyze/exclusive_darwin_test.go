@@ -3,6 +3,7 @@
 package analyze
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,8 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dundee/gdu/v5/internal/common"
-	"github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/pkg/fs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
@@ -246,22 +246,21 @@ func TestExclusiveUsageFollowsSymlinks(t *testing.T) {
 func TestAnalyzerMeasureSharedUsageWithFakeKernel(t *testing.T) {
 	fakeGetattrlist(t, privateReply(4096))
 
-	off := &BaseAnalyzer{}
-	usage, shared := off.MeasureSharedUsage("f", statInfo{}, 8192)
+	off := &scan{}
+	usage, shared := off.measureSharedUsage("f", statInfo{}, 8192)
 	assert.Equal(t, int64(8192), usage, "disabled keeps st_blocks")
 	assert.Equal(t, int64(0), shared)
 
-	on := &BaseAnalyzer{}
-	on.SetExclusiveSize(true)
-	usage, shared = on.MeasureSharedUsage("f", statInfo{}, 8192)
+	on := &scan{extents: &extentMeter{}}
+	usage, shared = on.measureSharedUsage("f", statInfo{}, 8192)
 	assert.Equal(t, int64(4096), usage)
 	assert.Equal(t, int64(4096), shared)
 }
 
 func TestEveryAnalyzerReportsExclusiveSizeOfClones(t *testing.T) {
 	analyzers := append(parityAnalyzers(),
-		parityAnalyzer{name: "parallel", analyzer: func(*testing.T) common.Analyzer { return CreateAnalyzer() }},
-		parityAnalyzer{name: "top-dir", analyzer: func(*testing.T) common.Analyzer { return CreateTopDirAnalyzer() }},
+		parityAnalyzer{name: "parallel", analyzer: func(*testing.T) Analyzer { return CreateAnalyzer() }},
+		parityAnalyzer{name: "top-dir", analyzer: func(*testing.T) Analyzer { return CreateTopDirAnalyzer() }},
 	)
 	const size = 1 << 20
 	for _, tc := range analyzers {
@@ -272,10 +271,8 @@ func TestEveryAnalyzerReportsExclusiveSizeOfClones(t *testing.T) {
 
 			scan := func(exclusive bool) fs.Item {
 				a := tc.analyzer(t)
-				a.SetExclusiveSize(exclusive)
-				root := a.AnalyzeDir(dir, func(_, _ string) bool { return false }, nil)
-				a.GetDone().Wait()
-				root.UpdateStats(make(fs.HardLinkedItems))
+				root := a.AnalyzeDir(context.Background(), dir, Options{ExclusiveSize: exclusive})
+				root.UpdateStats(false)
 				return root
 			}
 			normal := scan(false).GetUsage() - dirOwnUsage(dir)

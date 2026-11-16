@@ -67,7 +67,7 @@ only.
 
 **-l**, **\--log-file**=\"/dev/null\" Path to a logfile
 
-**-m**, **\--max-cores** Set max cores that Gdu will use.
+**-m**, **\--max-cores** Set max cores that Gdu will use, at most the number of processors; 0 (the default) leaves it to Go, which follows container limits.
 
 **\--sequential**\[=false\] Use sequential scanning (intended for rotating HDDs)
 
@@ -157,8 +157,9 @@ terminal UI). Gdu scans the given directory, prints the URL and serves a
 read-only browser interface for it.
 
 **\--web-listen**=\"\" Address for the web UI to listen on. By default the server
-binds to localhost on a random free port. Binding to a non-loopback address
-makes scan details reachable by other hosts on the network.
+binds to localhost on a random free port. Reading scan details needs the
+token in the printed URL. Binding to a non-loopback address makes them
+reachable, with that URL, by other hosts on the network, over unencrypted HTTP.
 
 **\--web-open**\[=true\] Open the web UI in the default browser on start. Use
 \--web-open=false to only print the URL.
@@ -167,9 +168,11 @@ makes scan details reachable by other hosts on the network.
 
 **-o**, **\--output-file** Export all info into file as JSON. If the file is \"-\", write to standard output.
 
-**\--output-attrs** Export only selected JSON attributes (name,asize,dsize,shsize,items,mtime,notreg,ino).
-Requires \--output-file. The *name* attribute is always included and directories always
-carry their *asize*, *dsize* and *items* summary stats so they can be preserved on import.
+**\--output-attrs** Export only selected JSON attributes (name,asize,dsize,shsize,items,mtime,notreg,ino,dev).
+Requires \--output-file. The *name* attribute is always included. As in ncdu's format, a
+directory's *dsize* is the disk usage of the directory itself; its totals are written as
+*gdu_asize* and *gdu_dsize* (with the *asize* and *dsize* attributes) and *items*, so they
+can be preserved on import.
 
 **\--config-file**=\"$HOME/.gdu.yaml\"             Read config from file
 
@@ -179,9 +182,15 @@ carry their *asize*, *dsize* and *items* summary stats so they can be preserved 
 
 **-D**, **\--db** Store analysis in database (*.sqlite for SQLite, *.badger for BadgerDB)
 
-**-r**, **\--read-from-storage**\[=false\] Use existing database instead of re-scanning
+**-r**, **\--read-from-storage**\[=false\] Show the analysis stored by an earlier scan in the database (\--db) instead of scanning
 
 **-v**, **\--version**\[=false\] Print version
+
+**\--self-update**\[=false\] Update gdu to the latest release published on GitHub.
+The downloaded archive is verified against the published SHA-256 checksums before the
+binary is replaced. When other arguments are given, the new binary is then run with them;
+otherwise gdu exits. Only binaries downloaded from GitHub releases can update themselves,
+gdu installed by a package manager has to be updated with that package manager.
 
 # FILE FLAGS
 

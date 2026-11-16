@@ -1,19 +1,18 @@
 package analyze
 
 import (
+	"context"
+	"log/slog"
 	"os"
 	"sort"
 	"testing"
 
-	log "github.com/sirupsen/logrus"
-
-	"github.com/dundee/gdu/v5/internal/testdir"
-	"github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/internal/testdir"
 	"github.com/stretchr/testify/assert"
 )
 
 func init() {
-	log.SetLevel(log.WarnLevel)
+	slog.SetLogLoggerLevel(slog.LevelWarn)
 }
 
 func TestAnalyzeDirSeq(t *testing.T) {
@@ -21,16 +20,14 @@ func TestAnalyzeDirSeq(t *testing.T) {
 	defer fin()
 
 	analyzer := CreateSeqAnalyzer()
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*Dir)
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile: func(_ string) bool { return false },
+	}).(*Dir)
 
 	progress := analyzer.GetProgress()
 	assert.GreaterOrEqual(t, progress.TotalUsage, int64(0))
 
-	analyzer.GetDone().Wait()
-	analyzer.ResetProgress()
-	dir.UpdateStats(make(fs.HardLinkedItems))
+	dir.UpdateStats(false)
 
 	// test dir info
 	assert.Equal(t, "test_dir", dir.Name)
@@ -71,9 +68,10 @@ func TestIgnoreDirSeq(t *testing.T) {
 	fin := testdir.CreateTestDir()
 	defer fin()
 
-	dir := CreateSeqAnalyzer().AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return true }, func(_ string) bool { return false },
-	).(*Dir)
+	dir := CreateSeqAnalyzer().AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreDir:  func(_, _ string) bool { return true },
+		IgnoreFile: func(_ string) bool { return false },
+	}).(*Dir)
 
 	assert.Equal(t, "test_dir", dir.Name)
 	assert.Equal(t, int64(1), dir.ItemCount)
@@ -90,11 +88,10 @@ func TestFlagsSeq(t *testing.T) {
 	assert.Nil(t, err)
 
 	analyzer := CreateSeqAnalyzer()
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*Dir)
-	analyzer.GetDone().Wait()
-	dir.UpdateStats(make(fs.HardLinkedItems))
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile: func(_ string) bool { return false },
+	}).(*Dir)
+	dir.UpdateStats(false)
 
 	sort.Sort(sort.Reverse(dir.Files))
 
@@ -118,11 +115,10 @@ func TestHardlinkSeq(t *testing.T) {
 	assert.Nil(t, err)
 
 	analyzer := CreateSeqAnalyzer()
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*Dir)
-	analyzer.GetDone().Wait()
-	dir.UpdateStats(make(fs.HardLinkedItems))
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile: func(_ string) bool { return false },
+	}).(*Dir)
+	dir.UpdateStats(false)
 
 	assert.Equal(t, int64(7), dir.Size)      // file2 and file3 are counted just once for size
 	assert.Equal(t, int64(6), dir.ItemCount) // but twice for item count
@@ -144,12 +140,11 @@ func TestFollowSymlinkSeq(t *testing.T) {
 	assert.Nil(t, err)
 
 	analyzer := CreateSeqAnalyzer()
-	analyzer.SetFollowSymlinks(true)
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*Dir)
-	analyzer.GetDone().Wait()
-	dir.UpdateStats(make(fs.HardLinkedItems))
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile:     func(_ string) bool { return false },
+		FollowSymlinks: true,
+	}).(*Dir)
+	dir.UpdateStats(false)
 
 	sort.Sort(sort.Reverse(dir.Files))
 
@@ -176,12 +171,11 @@ func TestBrokenSymlinkSkippedSeq(t *testing.T) {
 	assert.Nil(t, err)
 
 	analyzer := CreateSeqAnalyzer()
-	analyzer.SetFollowSymlinks(true)
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*Dir)
-	analyzer.GetDone().Wait()
-	dir.UpdateStats(make(fs.HardLinkedItems))
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile:     func(_ string) bool { return false },
+		FollowSymlinks: true,
+	}).(*Dir)
+	dir.UpdateStats(false)
 
 	sort.Sort(sort.Reverse(dir.Files))
 
@@ -198,9 +192,6 @@ func BenchmarkAnalyzeDirSeq(b *testing.B) {
 	b.ResetTimer()
 
 	analyzer := CreateSeqAnalyzer()
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	)
-	analyzer.GetDone().Wait()
-	dir.UpdateStats(make(fs.HardLinkedItems))
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{IgnoreFile: func(_ string) bool { return false }})
+	dir.UpdateStats(false)
 }

@@ -1,5 +1,9 @@
 # Installation
 
+Gdu installed in one of the ways below is updated by the respective package manager.
+Only binaries downloaded from the [releases page](https://github.com/dundee/gdu/releases)
+can update themselves with `gdu --self-update`.
+
 [Arch Linux](https://archlinux.org/packages/extra/x86_64/gdu/):
 
     pacman -S gdu
@@ -45,7 +49,7 @@
 
 [Go](https://pkg.go.dev/github.com/dundee/gdu):
 
-    go install github.com/dundee/gdu/v5/cmd/gdu@latest
+    go install github.com/dundee/gdu/v6/cmd/gdu@latest
 
 [Winget](https://github.com/microsoft/winget-pkgs/tree/master/manifests/d/dundee/gdu) (for Windows users):
 

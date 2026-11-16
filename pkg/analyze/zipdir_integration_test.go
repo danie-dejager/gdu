@@ -2,11 +2,12 @@ package analyze
 
 import (
 	"archive/zip"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/pkg/fs"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -20,10 +21,12 @@ func TestSequentialAnalyzerWithZipFile(t *testing.T) {
 
 	// Create analyzer
 	analyzer := CreateSeqAnalyzer()
-	analyzer.SetArchiveBrowsing(true)
 
 	// Analyze directory (containing zip file)
-	result := analyzer.AnalyzeDir(tempDir, func(string, string) bool { return false }, func(string) bool { return false })
+	result := analyzer.AnalyzeDir(context.Background(), tempDir, Options{
+		IgnoreFile:      func(string) bool { return false },
+		ArchiveBrowsing: true,
+	})
 
 	// Verify result
 	assert.NotNil(t, result)
@@ -65,10 +68,12 @@ func TestParallelAnalyzerWithZipFile(t *testing.T) {
 
 	// Create parallel analyzer
 	analyzer := CreateAnalyzer()
-	analyzer.SetArchiveBrowsing(true)
 
 	// Analyze directory
-	result := analyzer.AnalyzeDir(tempDir, func(string, string) bool { return false }, func(string) bool { return false })
+	result := analyzer.AnalyzeDir(context.Background(), tempDir, Options{
+		IgnoreFile:      func(string) bool { return false },
+		ArchiveBrowsing: true,
+	})
 
 	// Verify result
 	assert.NotNil(t, result)
@@ -104,10 +109,12 @@ func TestZipFileWithNestedStructure(t *testing.T) {
 
 	// Create analyzer
 	analyzer := CreateSeqAnalyzer()
-	analyzer.SetArchiveBrowsing(true)
 
 	// Analyze directory
-	result := analyzer.AnalyzeDir(tempDir, func(string, string) bool { return false }, func(string) bool { return false })
+	result := analyzer.AnalyzeDir(context.Background(), tempDir, Options{
+		IgnoreFile:      func(string) bool { return false },
+		ArchiveBrowsing: true,
+	})
 
 	// Find zip file
 	var zipItem fs.Item

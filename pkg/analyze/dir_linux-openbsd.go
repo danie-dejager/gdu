@@ -5,41 +5,22 @@ package analyze
 import (
 	"os"
 	"syscall"
-	"time"
 )
 
 const devBSize = 512
 
-func getPlatformSpecificUsageAndMli(info os.FileInfo, _ string) (usage int64, ino uint64) {
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		if stat.Nlink > 1 {
-			ino = stat.Ino
-		}
-
-		return stat.Blocks * devBSize, ino
+// fileStats returns the disk usage of the file described by info and, when
+// the file has several hard links, its identity.
+func fileStats(info os.FileInfo, _ string) (usage int64, link inodeKey) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, inodeKey{}
 	}
-	return 0, 0
-}
-
-func setPlatformSpecificAttrs(file *File, f os.FileInfo, _ string) {
-	if stat, ok := f.Sys().(*syscall.Stat_t); ok {
-		file.Usage = stat.Blocks * devBSize
-		file.Mtime = time.Unix(int64(stat.Mtim.Sec), int64(stat.Mtim.Nsec))
-
-		if stat.Nlink > 1 {
-			file.Mli = stat.Ino
-		}
+	if stat.Nlink > 1 {
+		// Dev is int32 on some platforms
+		link = inodeKey{dev: uint64(stat.Dev), ino: stat.Ino}
 	}
-}
-
-func setDirPlatformSpecificAttrs(dir *Dir, path string) {
-	var stat syscall.Stat_t
-	if err := syscall.Stat(path, &stat); err != nil {
-		return
-	}
-
-	dir.Mtime = time.Unix(int64(stat.Mtim.Sec), int64(stat.Mtim.Nsec))
-	dir.OwnUsage = stat.Blocks * devBSize
+	return stat.Blocks * devBSize, link
 }
 
 // dirOwnUsage returns the disk usage of the blocks allocated to the directory
@@ -61,15 +42,11 @@ func dirInfoOwnUsage(info os.FileInfo) int64 {
 	return 0
 }
 
-// getSyscallStats extracts usage and inode info from os.FileInfo using syscall
-func getSyscallStats(info os.FileInfo, _ string) (usage int64, mli uint64) {
+// dirInfoDevice returns the device of a directory that has been stat'ed.
+func dirInfoDevice(info os.FileInfo) uint64 {
 	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		usage = stat.Blocks * 512 // 512-byte blocks
-		if stat.Nlink > 1 {
-			mli = stat.Ino
-		}
-	} else {
-		usage = info.Size()
+		// Dev is int32 on some platforms
+		return uint64(stat.Dev)
 	}
-	return
+	return 0
 }

@@ -1,0 +1,88 @@
+package report
+
+import (
+	"bytes"
+	"encoding/json"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/dundee/gdu/v6/internal/config"
+	"github.com/dundee/gdu/v6/internal/testdir"
+	"github.com/dundee/gdu/v6/pkg/analyze"
+	"github.com/dundee/gdu/v6/pkg/analyze/badger"
+	"github.com/dundee/gdu/v6/pkg/analyze/sqlite"
+	"github.com/stretchr/testify/assert"
+)
+
+// assertStorageExportMatchesPlain exports test_dir twice — once with the
+// default in-memory analyzer and once with the given storage-backed analyzer —
+// and requires both report bodies to be equal. Stored dirs are not
+// *analyze.Dir, so --summarize and --depth used to export them with zeroed
+// stats, a bare root name, and (for --depth) without descending into the
+// lazily loaded children. It returns the storage-backed report for extra
+// assertions.
+func assertStorageExportMatchesPlain(
+	t *testing.T, analyzer analyze.Analyzer, depth int, summarize bool,
+) string {
+	t.Helper()
+
+	fin := testdir.CreateTestDir()
+	defer fin()
+
+	// The absolute path pins the exported root name: it is built from
+	// BasePath, which is not on the fs.Item interface and used to be dropped
+	// for stored roots.
+	path, err := filepath.Abs("test_dir")
+	assert.Nil(t, err)
+
+	var plain, plainReport bytes.Buffer
+	plainUI := CreateExportUI(&plain, &plainReport, analyze.CreateAnalyzer(), &config.Settings{Display: config.Display{Depth: depth, Summarize: summarize}})
+	assert.Nil(t, plainUI.AnalyzePath(path, nil))
+
+	var output, reportOutput bytes.Buffer
+	ui := CreateExportUI(&output, &reportOutput, analyze.CreateAnalyzer(), &config.Settings{Display: config.Display{Depth: depth, Summarize: summarize}})
+	ui.Analyzer = (analyzer)
+	assert.Nil(t, ui.AnalyzePath(path, nil))
+
+	rootName, err := json.Marshal(path)
+	assert.Nil(t, err)
+	assert.Contains(t, reportOutput.String(), `"name":`+string(rootName))
+	assert.NotContains(t, reportOutput.String(), `"asize":0,"dsize":0,"items":0`)
+	assert.Equal(t, reportWithoutHeader(plainReport.String()), reportWithoutHeader(reportOutput.String()))
+
+	return reportOutput.String()
+}
+
+// reportWithoutHeader drops the export header, whose timestamp differs between runs.
+func reportWithoutHeader(report string) string {
+	_, body, _ := strings.Cut(report, "\n")
+	return body
+}
+
+func createSqliteAnalyzer(t *testing.T) analyze.Analyzer {
+	t.Helper()
+	analyzer, err := sqlite.CreateAnalyzer(filepath.Join(t.TempDir(), "test.sqlite"))
+	if err != nil {
+		t.Skipf("sqlite storage not available: %v", err)
+	}
+	return analyzer
+}
+
+func TestAnalyzePathWithSummarizeFromStorage(t *testing.T) {
+	assertStorageExportMatchesPlain(t, badger.CreateAnalyzer(t.TempDir()), 0, true)
+}
+
+func TestAnalyzePathWithDepthFromStorage(t *testing.T) {
+	report := assertStorageExportMatchesPlain(t, badger.CreateAnalyzer(t.TempDir()), 1, false)
+	assert.Contains(t, report, `"name":"nested"`)
+}
+
+func TestAnalyzePathWithSummarizeFromSqliteStorage(t *testing.T) {
+	assertStorageExportMatchesPlain(t, createSqliteAnalyzer(t), 0, true)
+}
+
+func TestAnalyzePathWithDepthFromSqliteStorage(t *testing.T) {
+	report := assertStorageExportMatchesPlain(t, createSqliteAnalyzer(t), 1, false)
+	assert.Contains(t, report, `"name":"nested"`)
+}

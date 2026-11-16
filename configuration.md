@@ -2,15 +2,17 @@
 
 Gdu provides an additional set of configuration options to the usual command line options.
 
-You can get the full list of all possible options by running:
+To save the options of the current command line to the config file, run:
 
 ```
-gdu --write-config
+gdu --write-config ...
 ```
 
-This will create file `$HOME/.gdu.yaml` with all the options set to default values.
+This writes `$HOME/.gdu.yaml` (or the file given with `--config-file`) with what you configured: the settings already in that file, and those the command line changes. Defaults, the system config `/etc/gdu.yaml` and options that only make sense for one run (`input-file`, `output-file`, `output-attrs`, `read-from-storage`, `db`, `since`, `until`, `max-age`, `min-age`) given on the command line are left out.
 
-Let's go through them one by one:
+gdu tells on stderr about a config file it cannot read, about a `--config-file` that does not exist, and about keys it does not know, such as a misspelt option.
+
+The options are:
 
 #### `log-file`
 
@@ -55,7 +57,7 @@ All pattern sources combine. When `ignore-dir-patterns`, `ignore-from-file` and 
 
 #### `max-cores`
 
-Set max cores that Gdu will use.
+Set max cores that Gdu will use, at most the number of processors of the machine. 0, the default, leaves it to Go, which follows the CPU limit of a container.
 
 #### `sequential-scanning`
 
@@ -131,7 +133,7 @@ Do not allow viewing file contents
 
 #### `no-confirm-quit`
 
-Do not ask for confirmation before quitting after a long scan. By default, pressing `q`/`Q` after a scan that took more than a few seconds shows a confirmation dialog so that results are not lost by an accidental key press.
+Do not ask for confirmation before quitting after a long scan. By default, pressing `q`/`Q` after a scan that took more than a few seconds shows a confirmation dialog so that results are not lost by an accidental key press. With a database (`db`), a scan that has ended is saved, so quitting after it does not ask; quitting while a scan is still running does.
 
 #### `ctrl-c-quits`
 
@@ -155,7 +157,7 @@ Enable collection of profiling data and provide it on http://localhost:6060/debu
 
 #### `read-from-storage`
 
-Read analysis data from persistent key-value storage
+Show the analysis stored by an earlier scan in the database set by `db`, instead of scanning. Requires `db`, and the directory the analysis was stored for
 
 #### `summarize`
 
@@ -236,7 +238,7 @@ Allow navigating above the launch directory by pressing the left arrow key. When
 
 #### `web.listen`
 
-Address the web UI (`--web`) listens on, e.g. `localhost:8080`. When empty (the default), Gdu binds to `localhost` on a random free port. Binding to a non-loopback address exposes file names and sizes to other hosts on the network and prints a warning.
+Address the web UI (`--web`) listens on, e.g. `localhost:8080`. When empty (the default), Gdu binds to `localhost` on a random free port. Reading file names and sizes needs the token in the URL gdu prints. Binding to a non-loopback address exposes them, with that URL, to other hosts on the network over unencrypted HTTP, and prints a warning.
 
 #### `web.open-browser`
 

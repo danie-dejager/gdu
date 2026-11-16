@@ -4,13 +4,15 @@ import (
 	"archive/tar"
 	"compress/bzip2"
 	"compress/gzip"
+	"context"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
-	"time"
 
-	"github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/internal/xzcheck"
+	"github.com/dundee/gdu/v6/pkg/fs"
 	"github.com/ulikunitz/xz"
 )
 
@@ -40,6 +42,12 @@ func (tf *TarFile) GetType() string {
 // EncodeJSON encodes tar file to JSON
 func (tf *TarFile) EncodeJSON(writer io.Writer, topLevel bool, attributes fs.JSONAttributes) error {
 	return tf.File.EncodeJSON(writer, topLevel, attributes)
+}
+
+// itemStats returns the totals of the directory, computed when the archive
+// was opened (see finishArchive)
+func (td *TarDir) itemStats(*fs.HardLinks, bool) (itemCount, size, usage int64) {
+	return td.ItemCount, td.Size, td.Usage
 }
 
 // GetType returns type of tar directory
@@ -115,6 +123,10 @@ func openTarReader(tarPath string) (*tar.Reader, io.Closer, error) {
 		return tar.NewReader(br), f, nil
 
 	case strings.HasSuffix(lower, ".tar.xz") || strings.HasSuffix(lower, ".txz"):
+		if err := checkXZ(f); err != nil {
+			f.Close()
+			return nil, nil, err
+		}
 		xr, err := xz.NewReader(f)
 		if err != nil {
 			f.Close()
@@ -127,10 +139,25 @@ func openTarReader(tarPath string) (*tar.Reader, io.Closer, error) {
 	}
 }
 
-// processTarFile reads a tar archive and returns a TarDir representing its contents.
-// TarDir.Size is set to the total uncompressed content size; TarDir.Usage is the
-// size of the archive file on disk.
+// checkXZ fails for an xz file asking the decoder for more memory than
+// xzcheck.MaxDict.
+func checkXZ(f *os.File) error {
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	return xzcheck.CheckDicts(f, info.Size(), xzcheck.MaxDict)
+}
+
+// processTarFile reads a tar archive and returns a TarDir representing its
+// contents, whose totals finishArchive computes.
 func processTarFile(tarPath string, info os.FileInfo) (*TarDir, error) {
+	return readTarFile(context.Background(), tarPath, info)
+}
+
+// readTarFile is processTarFile, stopping when ctx is cancelled: reading
+// the headers of a compressed tar decompresses all of it.
+func readTarFile(ctx context.Context, tarPath string, info os.FileInfo) (*TarDir, error) {
 	tr, closer, err := openTarReader(tarPath)
 	if err != nil {
 		return nil, err
@@ -155,9 +182,10 @@ func processTarFile(tarPath string, info os.FileInfo) (*TarDir, error) {
 	dirMap := make(map[string]*TarDir)
 	dirMap[""] = tarDir
 
-	var totalUncompressed int64
-
-	for {
+	for entries := 0; ; entries++ {
+		if entries%1000 == 0 && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		header, err := tr.Next()
 		if err == io.EOF {
 			break
@@ -165,30 +193,32 @@ func processTarFile(tarPath string, info os.FileInfo) (*TarDir, error) {
 		if err != nil {
 			return nil, err
 		}
+		if entries == maxArchiveEntries {
+			return nil, errTooManyEntries
+		}
 
-		// Normalize path: strip leading ./ and trailing /
-		name := strings.TrimPrefix(header.Name, "./")
-		name = strings.TrimSuffix(name, "/")
+		name, ok := archiveEntryPath(header.Name)
+		if !ok {
+			continue
+		}
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if name != "" {
-				ensureTarDirExists(dirMap, name, tarPath, tarDir)
-			}
+			ensureTarDirExists(dirMap, name, tarPath, tarDir)
+			dirMap[name].Mtime = header.ModTime
 
 		case tar.TypeReg, tar.TypeLink, tar.TypeSymlink:
-			dirPath := filepath.Dir(name)
+			dirPath := path.Dir(name)
 			if dirPath == "." {
 				dirPath = ""
 			}
 			ensureTarDirExists(dirMap, dirPath, tarPath, tarDir)
 
 			parentDir := dirMap[dirPath]
-			totalUncompressed += header.Size
 
 			tarFile := &TarFile{
 				File: &File{
-					Name:   filepath.Base(name),
+					Name:   path.Base(name),
 					Flag:   ' ',
 					Size:   header.Size,
 					Usage:  header.Size,
@@ -203,31 +233,28 @@ func processTarFile(tarPath string, info os.FileInfo) (*TarDir, error) {
 		// Other types (device files, fifos, etc.) are silently skipped
 	}
 
-	// Size = total uncompressed content; Usage = compressed archive on disk
-	tarDir.Size = totalUncompressed
-	tarDir.Usage = info.Size()
-
 	return tarDir, nil
 }
 
-// ensureTarDirExists ensures all directories in the specified path exist within dirMap
-func ensureTarDirExists(dirMap map[string]*TarDir, path, tarPath string, rootDir *TarDir) {
-	if path == "" || path == "." {
+// ensureTarDirExists ensures all directories of dirPath, a path made by
+// archiveEntryPath, exist within dirMap
+func ensureTarDirExists(dirMap map[string]*TarDir, dirPath, tarPath string, rootDir *TarDir) {
+	if dirPath == "" || dirPath == "." {
 		return
 	}
 
-	if _, exists := dirMap[path]; exists {
+	if _, exists := dirMap[dirPath]; exists {
 		return
 	}
 
 	// Ensure parent directory exists first
-	parentPath := filepath.Dir(path)
-	if parentPath != "." && parentPath != "" && parentPath != path {
+	parentPath := path.Dir(dirPath)
+	if parentPath != "." && parentPath != "" && parentPath != dirPath {
 		ensureTarDirExists(dirMap, parentPath, tarPath, rootDir)
 	}
 
 	var parent *TarDir
-	if parentPath == "" || parentPath == "." || parentPath == path {
+	if parentPath == "" || parentPath == "." || parentPath == dirPath {
 		parent = rootDir
 	} else {
 		parent = dirMap[parentPath]
@@ -236,11 +263,9 @@ func ensureTarDirExists(dirMap map[string]*TarDir, path, tarPath string, rootDir
 	newDir := &TarDir{
 		Dir: &Dir{
 			File: &File{
-				Name:   filepath.Base(path),
+				Name:   path.Base(dirPath),
 				Flag:   'T',
-				Size:   4096,
-				Usage:  4096,
-				Mtime:  time.Now(),
+				Mtime:  rootDir.Mtime,
 				Parent: parent,
 			},
 			ItemCount: 1,
@@ -249,6 +274,6 @@ func ensureTarDirExists(dirMap map[string]*TarDir, path, tarPath string, rootDir
 		tarPath: tarPath,
 	}
 
-	dirMap[path] = newDir
+	dirMap[dirPath] = newDir
 	parent.AddFile(newDir)
 }

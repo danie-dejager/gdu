@@ -1,11 +1,12 @@
 package analyze
 
 import (
+	"context"
 	"sort"
 	"testing"
 
-	"github.com/dundee/gdu/v5/internal/testdir"
-	"github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/internal/testdir"
+	"github.com/dundee/gdu/v6/pkg/fs"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -13,9 +14,9 @@ func TestCollectTopFiles2(t *testing.T) {
 	fin := testdir.CreateTestDir()
 	defer fin()
 
-	dir := CreateAnalyzer().AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	)
+	dir := CreateAnalyzer().AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile: func(_ string) bool { return false },
+	})
 
 	topFiles := CollectTopFiles(dir, 2, fs.SortByApparentSize)
 	assert.Equal(t, 2, len(topFiles))
@@ -29,9 +30,9 @@ func TestCollectTopFiles1(t *testing.T) {
 	fin := testdir.CreateTestDir()
 	defer fin()
 
-	dir := CreateAnalyzer().AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	)
+	dir := CreateAnalyzer().AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile: func(_ string) bool { return false },
+	})
 
 	topFiles := CollectTopFiles(dir, 1, fs.SortByApparentSize)
 	assert.Equal(t, 1, len(topFiles))

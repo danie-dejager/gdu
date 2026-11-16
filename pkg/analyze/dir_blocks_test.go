@@ -1,12 +1,11 @@
 package analyze
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/dundee/gdu/v5/internal/common"
-	"github.com/dundee/gdu/v5/pkg/fs"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -20,9 +19,8 @@ func TestScannedDirIncludesOwnBlocks(t *testing.T) {
 	want := usageOf(t, dir) + usageOf(t, filepath.Join(dir, "a")) + usageOf(t, filepath.Join(dir, "b"))
 
 	analyzer := CreateSeqAnalyzer()
-	scanned := analyzer.AnalyzeDir(root, func(_, _ string) bool { return false }, nil).(*Dir)
-	analyzer.GetDone().Wait()
-	scanned.UpdateStats(make(fs.HardLinkedItems))
+	scanned := analyzer.AnalyzeDir(context.Background(), root, Options{}).(*Dir)
+	scanned.UpdateStats(false)
 
 	assert.Equal(t, want, scanned.Files[0].GetUsage())
 }
@@ -34,13 +32,12 @@ func TestZeroBlockDirIsNotChargedABlock(t *testing.T) {
 	root := zeroBlockDir(t)
 	assert.NoError(t, os.WriteFile(filepath.Join(root, "empty"), nil, 0o600))
 
-	for name, analyzer := range map[string]common.Analyzer{
+	for name, analyzer := range map[string]Analyzer{
 		"parallel": CreateAnalyzer(),
 		"top-dir":  CreateTopDirAnalyzer(),
 	} {
-		scanned := analyzer.AnalyzeDir(root, func(_, _ string) bool { return false }, nil)
-		analyzer.GetDone().Wait()
-		scanned.UpdateStats(make(fs.HardLinkedItems))
+		scanned := analyzer.AnalyzeDir(context.Background(), root, Options{})
+		scanned.UpdateStats(false)
 
 		assert.Equal(t, int64(0), scanned.GetUsage(), name)
 	}

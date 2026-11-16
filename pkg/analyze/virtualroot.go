@@ -1,7 +1,7 @@
 package analyze
 
 import (
-	"github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/pkg/fs"
 )
 
 // VirtualRootName is the display name of the synthetic directory that groups
@@ -35,7 +35,7 @@ func CreateVirtualRootDir(roots ...fs.Item) *Dir {
 	}
 
 	for _, root := range roots {
-		root.SetParent(dir)
+		setParent(root, dir)
 		dir.AddFile(root)
 	}
 
@@ -54,6 +54,22 @@ func ItemDisplayName(parent, item fs.Item) string {
 		return item.GetPath()
 	}
 	return item.GetName()
+}
+
+// ScannedRootPaths returns the paths of the scanned roots of the tree topped by
+// top: the roots grouped under the virtual top level dir, or top itself.
+func ScannedRootPaths(top fs.Item) []string {
+	if top == nil {
+		return nil
+	}
+	if !IsVirtualRootDir(top) {
+		return []string{top.GetPath()}
+	}
+	var paths []string
+	for root := range top.GetFiles(fs.SortByName, fs.SortAsc) {
+		paths = append(paths, root.GetPath())
+	}
+	return paths
 }
 
 // IsVirtualRootDir reports whether item is the synthetic dir created by

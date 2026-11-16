@@ -3,14 +3,14 @@
 package analyze
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
 
-	"github.com/dundee/gdu/v5/internal/common"
-	"github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/pkg/fs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
@@ -299,26 +299,23 @@ func TestAnalyzersRecordSharedUsage(t *testing.T) {
 	ignoreDir := func(_, _ string) bool { return false }
 	ignoreFile := func(_ string) bool { return false }
 
-	scanners := map[string]func(exclusive bool) fs.Item{
-		"sequential": func(exclusive bool) fs.Item {
+	scanners := map[string]func(exclusive bool) Node{
+		"sequential": func(exclusive bool) Node {
 			a := CreateSeqAnalyzer()
-			a.SetExclusiveSize(exclusive)
-			r := a.AnalyzeDir(dir, ignoreDir, ignoreFile)
-			a.GetDone().Wait()
+			r := a.AnalyzeDir(context.Background(), dir, Options{
+				IgnoreDir:     ignoreDir,
+				IgnoreFile:    ignoreFile,
+				ExclusiveSize: exclusive,
+			})
 			return r
 		},
-		"parallel": func(exclusive bool) fs.Item {
+		"parallel": func(exclusive bool) Node {
 			a := CreateAnalyzer()
-			a.SetExclusiveSize(exclusive)
-			r := a.AnalyzeDir(dir, ignoreDir, ignoreFile)
-			a.GetDone().Wait()
-			return r
-		},
-		"stable-order": func(exclusive bool) fs.Item {
-			a := CreateStableOrderAnalyzer()
-			a.SetExclusiveSize(exclusive)
-			r := a.AnalyzeDir(dir, ignoreDir, ignoreFile)
-			a.GetDone().Wait()
+			r := a.AnalyzeDir(context.Background(), dir, Options{
+				IgnoreDir:     ignoreDir,
+				IgnoreFile:    ignoreFile,
+				ExclusiveSize: exclusive,
+			})
 			return r
 		},
 	}
@@ -348,16 +345,16 @@ func TestHardLinksCountedOnce(t *testing.T) {
 	require.NoError(t, os.Link(a, filepath.Join(dir, "b")))
 
 	analyzer := CreateSeqAnalyzer()
-	analyzer.SetExclusiveSize(true)
-	root := analyzer.AnalyzeDir(dir, func(_, _ string) bool { return false }, func(_ string) bool { return false })
-	analyzer.GetDone().Wait()
-	root.UpdateStats(make(fs.HardLinkedItems))
+	root := analyzer.AnalyzeDir(context.Background(), dir, Options{
+		IgnoreFile:    func(_ string) bool { return false },
+		ExclusiveSize: true,
+	})
+	root.UpdateStats(false)
 
 	// same figure as the plain analyzer, which counts a hard link once
 	plain := CreateSeqAnalyzer()
-	plainRoot := plain.AnalyzeDir(dir, func(_, _ string) bool { return false }, func(_ string) bool { return false })
-	plain.GetDone().Wait()
-	plainRoot.UpdateStats(make(fs.HardLinkedItems))
+	plainRoot := plain.AnalyzeDir(context.Background(), dir, Options{IgnoreFile: func(_ string) bool { return false }})
+	plainRoot.UpdateStats(false)
 
 	assert.Equal(t, plainRoot.GetUsage(), root.GetUsage())
 	assert.Equal(t, allocated(t, a)+dirOwnUsage(dir), root.GetUsage())
@@ -367,21 +364,25 @@ func TestAnalyzersMeasureHardLinkedFileOnce(t *testing.T) {
 	ignoreDir := func(_, _ string) bool { return false }
 	ignoreFile := func(_ string) bool { return false }
 
-	scanners := map[string]func(dir string) fs.Item{
-		"top-dir": func(dir string) fs.Item {
+	scanners := map[string]func(dir string) Node{
+		"top-dir": func(dir string) Node {
 			a := CreateTopDirAnalyzer()
-			a.SetExclusiveSize(true)
-			r := a.AnalyzeDir(dir, ignoreDir, ignoreFile)
-			a.GetDone().Wait()
+			r := a.AnalyzeDir(context.Background(), dir, Options{
+				IgnoreDir:     ignoreDir,
+				IgnoreFile:    ignoreFile,
+				ExclusiveSize: true,
+			})
 			return r
 		},
-		"sqlite": func(dir string) fs.Item {
-			a, err := CreateSqliteAnalyzer(filepath.Join(t.TempDir(), "test.db"))
+		"sqlite": func(dir string) Node {
+			a, err := createSqliteAnalyzer(filepath.Join(t.TempDir(), "test.db"))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = a.storage.Close() })
-			a.SetExclusiveSize(true)
-			r := a.AnalyzeDir(dir, ignoreDir, ignoreFile)
-			a.GetDone().Wait()
+			r := a.AnalyzeDir(context.Background(), dir, Options{
+				IgnoreDir:     ignoreDir,
+				IgnoreFile:    ignoreFile,
+				ExclusiveSize: true,
+			})
 			return r
 		},
 	}
@@ -396,7 +397,7 @@ func TestAnalyzersMeasureHardLinkedFileOnce(t *testing.T) {
 			calls := fakeFiemap(t, mapExtents(fiemapExtent{length: 4096, flags: fiemapExtentLast}))
 
 			root := scan(dir)
-			root.UpdateStats(make(fs.HardLinkedItems))
+			root.UpdateStats(false)
 
 			assert.Equal(t, 1, *calls, "the second link is not measured")
 			assert.Equal(t, int64(4096), root.GetUsage()-dirOwnUsage(dir)-dirOwnUsage(sub))
@@ -415,10 +416,10 @@ func TestAnalyzersReportExclusiveSize(t *testing.T) {
 	ignoreDir := func(_, _ string) bool { return false }
 	ignoreFile := func(_ string) bool { return false }
 
-	run := func(name string, exclusive bool, scan func() fs.Item) int64 {
+	run := func(name string, exclusive bool, scan func() Node) int64 {
 		t.Helper()
 		root := scan()
-		root.UpdateStats(make(fs.HardLinkedItems))
+		root.UpdateStats(false)
 		var usage int64
 		for f := range root.GetFiles(fs.SortByName, fs.SortAsc) {
 			usage += f.GetUsage()
@@ -427,49 +428,50 @@ func TestAnalyzersReportExclusiveSize(t *testing.T) {
 		return usage
 	}
 
-	scanners := map[string]func(exclusive bool) fs.Item{
-		"sequential": func(exclusive bool) fs.Item {
+	scanners := map[string]func(exclusive bool) Node{
+		"sequential": func(exclusive bool) Node {
 			a := CreateSeqAnalyzer()
-			a.SetExclusiveSize(exclusive)
-			r := a.AnalyzeDir(dir, ignoreDir, ignoreFile)
-			a.GetDone().Wait()
+			r := a.AnalyzeDir(context.Background(), dir, Options{
+				IgnoreDir:     ignoreDir,
+				IgnoreFile:    ignoreFile,
+				ExclusiveSize: exclusive,
+			})
 			return r
 		},
-		"parallel": func(exclusive bool) fs.Item {
+		"parallel": func(exclusive bool) Node {
 			a := CreateAnalyzer()
-			a.SetExclusiveSize(exclusive)
-			r := a.AnalyzeDir(dir, ignoreDir, ignoreFile)
-			a.GetDone().Wait()
+			r := a.AnalyzeDir(context.Background(), dir, Options{
+				IgnoreDir:     ignoreDir,
+				IgnoreFile:    ignoreFile,
+				ExclusiveSize: exclusive,
+			})
 			return r
 		},
-		"top-dir": func(exclusive bool) fs.Item {
+		"top-dir": func(exclusive bool) Node {
 			a := CreateTopDirAnalyzer()
-			a.SetExclusiveSize(exclusive)
-			r := a.AnalyzeDir(dir, ignoreDir, ignoreFile)
-			a.GetDone().Wait()
+			r := a.AnalyzeDir(context.Background(), dir, Options{
+				IgnoreDir:     ignoreDir,
+				IgnoreFile:    ignoreFile,
+				ExclusiveSize: exclusive,
+			})
 			return r
 		},
-		"sqlite": func(exclusive bool) fs.Item {
-			a, err := CreateSqliteAnalyzer(filepath.Join(t.TempDir(), "test.db"))
+		"sqlite": func(exclusive bool) Node {
+			a, err := createSqliteAnalyzer(filepath.Join(t.TempDir(), "test.db"))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = a.storage.Close() })
-			a.SetExclusiveSize(exclusive)
-			r := a.AnalyzeDir(dir, ignoreDir, ignoreFile)
-			a.GetDone().Wait()
-			return r
-		},
-		"stable-order": func(exclusive bool) fs.Item {
-			a := CreateStableOrderAnalyzer()
-			a.SetExclusiveSize(exclusive)
-			r := a.AnalyzeDir(dir, ignoreDir, ignoreFile)
-			a.GetDone().Wait()
+			r := a.AnalyzeDir(context.Background(), dir, Options{
+				IgnoreDir:     ignoreDir,
+				IgnoreFile:    ignoreFile,
+				ExclusiveSize: exclusive,
+			})
 			return r
 		},
 	}
 	for name, scan := range scanners {
 		t.Run(name, func(t *testing.T) {
-			normal := run(name, false, func() fs.Item { return scan(false) })
-			exclusive := run(name, true, func() fs.Item { return scan(true) })
+			normal := run(name, false, func() Node { return scan(false) })
+			exclusive := run(name, true, func() Node { return scan(true) })
 			assert.GreaterOrEqual(t, normal, int64(2*size), "block usage counts shared data per file")
 			assert.Equal(t, int64(0), exclusive, "everything is shared")
 		})
@@ -577,8 +579,8 @@ func TestExtentBytesPagesAndSplitsSharedWithFakeKernel(t *testing.T) {
 // not available.
 func TestEveryAnalyzerUsesExclusiveSizeWithFakeKernel(t *testing.T) {
 	analyzers := append(parityAnalyzers(),
-		parityAnalyzer{name: "parallel", analyzer: func(*testing.T) common.Analyzer { return CreateAnalyzer() }},
-		parityAnalyzer{name: "top-dir", analyzer: func(*testing.T) common.Analyzer { return CreateTopDirAnalyzer() }},
+		parityAnalyzer{name: "parallel", analyzer: func(*testing.T) Analyzer { return CreateAnalyzer() }},
+		parityAnalyzer{name: "top-dir", analyzer: func(*testing.T) Analyzer { return CreateTopDirAnalyzer() }},
 	)
 	for _, tc := range analyzers {
 		t.Run(tc.name, func(t *testing.T) {
@@ -593,10 +595,8 @@ func TestEveryAnalyzerUsesExclusiveSizeWithFakeKernel(t *testing.T) {
 			))
 
 			a := tc.analyzer(t)
-			a.SetExclusiveSize(true)
-			root := a.AnalyzeDir(dir, func(_, _ string) bool { return false }, nil)
-			a.GetDone().Wait()
-			root.UpdateStats(make(fs.HardLinkedItems))
+			root := a.AnalyzeDir(context.Background(), dir, Options{ExclusiveSize: true})
+			root.UpdateStats(false)
 
 			assert.Equal(t, 2*4096+dirOwnUsage(dir)+dirOwnUsage(sub), root.GetUsage())
 			if tc.name == "top-dir" {
@@ -662,14 +662,13 @@ func TestAnalyzerMeasureSharedUsageWithFakeKernel(t *testing.T) {
 		fiemapExtent{logical: 4096, length: 12288, flags: fiemapExtentShared | fiemapExtentLast},
 	))
 
-	off := &BaseAnalyzer{}
-	usage, shared := off.MeasureSharedUsage(path, info, 8192)
+	off := &scan{}
+	usage, shared := off.measureSharedUsage(path, info, 8192)
 	assert.Equal(t, int64(8192), usage, "disabled keeps st_blocks")
 	assert.Equal(t, int64(0), shared)
 
-	on := &BaseAnalyzer{}
-	on.SetExclusiveSize(true)
-	usage, shared = on.MeasureSharedUsage(path, info, 8192)
+	on := &scan{extents: &extentMeter{}}
+	usage, shared = on.measureSharedUsage(path, info, 8192)
 	assert.Equal(t, int64(4096), usage)
 	assert.Equal(t, int64(12288), shared)
 }

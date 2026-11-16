@@ -1,12 +1,12 @@
 package analyze
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/dundee/gdu/v5/internal/common"
-	"github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/pkg/fs"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -67,7 +67,7 @@ func usageOf(t *testing.T, path string) int64 {
 	t.Helper()
 	info, err := os.Lstat(path)
 	assert.NoError(t, err)
-	usage, _ := getPlatformSpecificUsageAndMli(info, path)
+	usage, _ := fileStats(info, path)
 	return usage
 }
 
@@ -75,12 +75,11 @@ func usageOf(t *testing.T, path string) int64 {
 // per common.UI.CreateFileTypeFilter, nil is how "no filtering" is expressed,
 // and analyzers that finalize stats during the scan read it to pick between
 // UpdateStats and UpdateStatsWithFileFiltering accounting.
-func scanWith(t *testing.T, analyzer common.Analyzer, root string) map[string]itemStats {
+func scanWith(t *testing.T, analyzer Analyzer, root string) map[string]itemStats {
 	t.Helper()
 
-	dir := analyzer.AnalyzeDir(root, func(_, _ string) bool { return false }, nil)
-	analyzer.GetDone().Wait()
-	dir.UpdateStats(make(fs.HardLinkedItems))
+	dir := analyzer.AnalyzeDir(context.Background(), root, Options{})
+	dir.UpdateStats(false)
 
 	return collectStats(dir)
 }
@@ -89,15 +88,14 @@ func scanWith(t *testing.T, analyzer common.Analyzer, root string) map[string]it
 // the whole tree becomes empty directories and the collapse branch of
 // resolveDirStats applies.
 func scanFilteringAllFiles(
-	t *testing.T, analyzer common.Analyzer, root string,
+	t *testing.T, analyzer Analyzer, root string,
 ) map[string]itemStats {
 	t.Helper()
 
-	dir := analyzer.AnalyzeDir(
-		root, func(_, _ string) bool { return false }, func(_ string) bool { return true },
-	)
-	analyzer.GetDone().Wait()
-	dir.UpdateStatsWithFileFiltering(make(fs.HardLinkedItems))
+	dir := analyzer.AnalyzeDir(context.Background(), root, Options{
+		IgnoreFile: func(string) bool { return true },
+	})
+	dir.UpdateStats(true)
 
 	return collectStats(dir)
 }
@@ -173,7 +171,7 @@ func TestTopDirAnalyzerUsageParity(t *testing.T) {
 
 	for _, tc := range []struct {
 		name       string
-		fileFilter common.ShouldFileBeIgnored
+		fileFilter ShouldFileBeIgnored
 		want       map[string]itemStats
 	}{
 		{name: "unfiltered", want: scanWith(t, CreateAnalyzer(), root)},
@@ -185,9 +183,8 @@ func TestTopDirAnalyzerUsageParity(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			analyzer := CreateTopDirAnalyzer()
-			dir := analyzer.AnalyzeDir(root, func(_, _ string) bool { return false }, tc.fileFilter)
-			analyzer.GetDone().Wait()
-			dir.UpdateStats(make(fs.HardLinkedItems))
+			dir := analyzer.AnalyzeDir(context.Background(), root, Options{IgnoreFile: tc.fileFilter})
+			dir.UpdateStats(false)
 
 			assert.Equal(t, tc.want["."].usage, dir.GetUsage(), "top-dir analyzer at root")
 			for child := range dir.GetFiles(fs.SortByName, fs.SortAsc) {
@@ -202,29 +199,25 @@ func TestTopDirAnalyzerUsageParity(t *testing.T) {
 
 type parityAnalyzer struct {
 	name     string
-	analyzer func(t *testing.T) common.Analyzer
+	analyzer func(t *testing.T) Analyzer
 }
 
 func parityAnalyzers() []parityAnalyzer {
 	return []parityAnalyzer{
 		{
 			name:     "sequential",
-			analyzer: func(*testing.T) common.Analyzer { return CreateSeqAnalyzer() },
-		},
-		{
-			name:     "stable order",
-			analyzer: func(*testing.T) common.Analyzer { return CreateStableOrderAnalyzer() },
+			analyzer: func(*testing.T) Analyzer { return CreateSeqAnalyzer() },
 		},
 		{
 			name: "stored (badger)",
-			analyzer: func(t *testing.T) common.Analyzer {
-				return CreateStoredAnalyzer(filepath.Join(t.TempDir(), "badger"))
+			analyzer: func(t *testing.T) Analyzer {
+				return createStoredAnalyzer(filepath.Join(t.TempDir(), "badger"))
 			},
 		},
 		{
 			name: "sqlite",
-			analyzer: func(t *testing.T) common.Analyzer {
-				analyzer, err := CreateSqliteAnalyzer(filepath.Join(t.TempDir(), "test.db"))
+			analyzer: func(t *testing.T) Analyzer {
+				analyzer, err := createSqliteAnalyzer(filepath.Join(t.TempDir(), "test.db"))
 				assert.NoError(t, err)
 				t.Cleanup(func() { _ = analyzer.storage.Close() })
 				return analyzer

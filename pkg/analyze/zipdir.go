@@ -3,12 +3,13 @@ package analyze
 import (
 	"archive/zip"
 	"io"
+	"math"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
-	"time"
 
-	"github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/pkg/fs"
 )
 
 // ZipDir represents a directory structure inside a zip file
@@ -40,6 +41,12 @@ func (zf *ZipFile) EncodeJSON(writer io.Writer, topLevel bool, attributes fs.JSO
 	return zf.File.EncodeJSON(writer, topLevel, attributes)
 }
 
+// itemStats returns the totals of the directory, computed when the archive
+// was opened (see finishArchive)
+func (zd *ZipDir) itemStats(*fs.HardLinks, bool) (itemCount, size, usage int64) {
+	return zd.ItemCount, zd.Size, zd.Usage
+}
+
 // GetType returns type of zip directory
 func (zd *ZipDir) GetType() string {
 	return "ZipDirectory"
@@ -64,6 +71,12 @@ func (zd *ZipDir) GetPath() string {
 	return zd.zipPath
 }
 
+// clampSize returns the size an archive tells as an int64; a crafted one may
+// not fit.
+func clampSize(size uint64) int64 {
+	return int64(min(size, math.MaxInt64))
+}
+
 // isZipFile checks if a file is a zip or jar file
 func isZipFile(filename string) bool {
 	ext := strings.ToLower(filepath.Ext(filename))
@@ -77,6 +90,9 @@ func processZipFile(zipPath string, info os.FileInfo) (zipDir *ZipDir, err error
 		return nil, err
 	}
 	defer reader.Close()
+	if len(reader.File) > maxArchiveEntries {
+		return nil, errTooManyEntries
+	}
 
 	// Create root directory
 	zipDir = &ZipDir{
@@ -103,8 +119,12 @@ func processZipFile(zipPath string, info os.FileInfo) (zipDir *ZipDir, err error
 			continue // Skip directory entries, we'll create them automatically based on file paths
 		}
 
+		name, ok := archiveEntryPath(f.Name)
+		if !ok {
+			continue
+		}
 		// Parse file path and ensure all parent directories exist
-		dirPath := filepath.Dir(f.Name)
+		dirPath := path.Dir(name)
 		if dirPath == "." {
 			dirPath = "" // root directory
 		}
@@ -114,15 +134,15 @@ func processZipFile(zipPath string, info os.FileInfo) (zipDir *ZipDir, err error
 		parentDir := dirMap[dirPath]
 		zipFile := &ZipFile{
 			File: &File{
-				Name:   filepath.Base(f.Name),
+				Name:   path.Base(name),
 				Flag:   ' ',
-				Size:   int64(f.UncompressedSize64),
-				Usage:  int64(f.CompressedSize64),
+				Size:   clampSize(f.UncompressedSize64),
+				Usage:  clampSize(f.CompressedSize64),
 				Mtime:  f.FileInfo().ModTime(),
 				Parent: parentDir,
 			},
 			zipPath:   zipPath,
-			inZipPath: f.Name,
+			inZipPath: name,
 		}
 
 		parentDir.AddFile(zipFile)
@@ -131,26 +151,27 @@ func processZipFile(zipPath string, info os.FileInfo) (zipDir *ZipDir, err error
 	return zipDir, nil
 }
 
-// ensureZipDirExists ensures all directories in the specified path exist
-func ensureZipDirExists(dirMap map[string]*ZipDir, path, zipPath string, rootDir *ZipDir) {
-	if path == "" || path == "." {
+// ensureZipDirExists ensures all directories of dirPath, a path made by
+// archiveEntryPath, exist
+func ensureZipDirExists(dirMap map[string]*ZipDir, dirPath, zipPath string, rootDir *ZipDir) {
+	if dirPath == "" || dirPath == "." {
 		return
 	}
 
 	// If directory already exists, return directly
-	if _, exists := dirMap[path]; exists {
+	if _, exists := dirMap[dirPath]; exists {
 		return
 	}
 
 	// Ensure parent directory exists
-	parentPath := filepath.Dir(path)
-	if parentPath != "." && parentPath != "" && parentPath != path {
+	parentPath := path.Dir(dirPath)
+	if parentPath != "." && parentPath != "" && parentPath != dirPath {
 		ensureZipDirExists(dirMap, parentPath, zipPath, rootDir)
 	}
 
 	// Create current directory
 	var parent *ZipDir
-	if parentPath == "" || parentPath == "." || parentPath == path {
+	if parentPath == "" || parentPath == "." || parentPath == dirPath {
 		parent = rootDir
 	} else {
 		parent = dirMap[parentPath]
@@ -159,11 +180,9 @@ func ensureZipDirExists(dirMap map[string]*ZipDir, path, zipPath string, rootDir
 	newDir := &ZipDir{
 		Dir: &Dir{
 			File: &File{
-				Name:   filepath.Base(path),
+				Name:   path.Base(dirPath),
 				Flag:   'Z',
-				Size:   4096, // virtual directory size
-				Usage:  4096,
-				Mtime:  time.Now(),
+				Mtime:  rootDir.Mtime,
 				Parent: parent,
 			},
 			ItemCount: 1,
@@ -172,25 +191,6 @@ func ensureZipDirExists(dirMap map[string]*ZipDir, path, zipPath string, rootDir
 		zipPath: zipPath,
 	}
 
-	dirMap[path] = newDir
+	dirMap[dirPath] = newDir
 	parent.AddFile(newDir)
-}
-
-// getZipFileSize gets the total uncompressed size of a zip file
-func getZipFileSize(zipPath string) (uncompressed, compressed int64, err error) {
-	reader, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return 0, 0, err
-	}
-	defer reader.Close()
-
-	var uncompressedSize, compressedSize int64
-	for _, f := range reader.File {
-		if !f.FileInfo().IsDir() {
-			uncompressedSize += int64(f.UncompressedSize64)
-			compressedSize += int64(f.CompressedSize64)
-		}
-	}
-
-	return uncompressedSize, compressedSize, nil
 }

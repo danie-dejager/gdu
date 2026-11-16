@@ -1,21 +1,21 @@
 package testanalyze
 
 import (
+	"context"
 	"testing"
 	"time"
 
-	"github.com/dundee/gdu/v5/internal/common"
-	"github.com/dundee/gdu/v5/pkg/analyze"
-	"github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/pkg/analyze"
+	"github.com/dundee/gdu/v6/pkg/fs"
 	"github.com/stretchr/testify/assert"
 )
 
-// Compile-time check that MockedAnalyzer implements common.Analyzer
-var _ common.Analyzer = (*MockedAnalyzer)(nil)
+// Compile-time check that MockedAnalyzer implements analyze.Analyzer
+var _ analyze.Analyzer = (*MockedAnalyzer)(nil)
 
 func TestAnalyzeDir(t *testing.T) {
 	a := &MockedAnalyzer{}
-	result := a.AnalyzeDir(".", nil, nil)
+	result := a.AnalyzeDir(context.Background(), ".", analyze.Options{})
 
 	assert.NotNil(t, result)
 	assert.True(t, result.IsDir())
@@ -79,85 +79,6 @@ func TestGetProgress(t *testing.T) {
 	assert.Equal(t, int64(0), progress.ItemCount)
 }
 
-func TestGetDone(t *testing.T) {
-	a := &MockedAnalyzer{}
-	done := a.GetDone()
-
-	assert.NotNil(t, done)
-
-	// The channel should be already closed (broadcast), so receiving should not block
-	select {
-	case <-done:
-		// expected: channel was broadcast
-	case <-time.After(time.Second):
-		t.Fatal("GetDone channel was not broadcast")
-	}
-}
-
-func TestResetProgressClearsCancellation(t *testing.T) {
-	a := &MockedAnalyzer{}
-	a.Cancel()
-	assert.True(t, a.IsCancelled())
-
-	a.ResetProgress()
-	assert.False(t, a.IsCancelled())
-}
-
-func TestSetFollowSymlinks(t *testing.T) {
-	a := &MockedAnalyzer{}
-	assert.NotPanics(t, func() {
-		a.SetFollowSymlinks(true)
-		a.SetFollowSymlinks(false)
-	})
-}
-
-func TestSetShowAnnexedSize(t *testing.T) {
-	a := &MockedAnalyzer{}
-	assert.NotPanics(t, func() {
-		a.SetShowAnnexedSize(true)
-		a.SetShowAnnexedSize(false)
-	})
-}
-
-func TestMeasureSharedUsage(t *testing.T) {
-	a := &MockedAnalyzer{}
-	exclusive, shared := a.MeasureSharedUsage("file", nil, 4096)
-	assert.Equal(t, int64(4096), exclusive)
-	assert.Equal(t, int64(0), shared)
-}
-
-func TestSetExclusiveSize(t *testing.T) {
-	a := &MockedAnalyzer{}
-	assert.NotPanics(t, func() {
-		a.SetExclusiveSize(true)
-		a.SetExclusiveSize(false)
-	})
-}
-
-func TestSetTimeFilter(t *testing.T) {
-	a := &MockedAnalyzer{}
-	assert.NotPanics(t, func() {
-		a.SetTimeFilter(func(mtime time.Time) bool { return true })
-		a.SetTimeFilter(nil)
-	})
-}
-
-func TestSetArchiveBrowsing(t *testing.T) {
-	a := &MockedAnalyzer{}
-	assert.NotPanics(t, func() {
-		a.SetArchiveBrowsing(true)
-		a.SetArchiveBrowsing(false)
-	})
-}
-
-func TestSetFileTypeFilter(t *testing.T) {
-	a := &MockedAnalyzer{}
-	assert.NotPanics(t, func() {
-		a.SetFileTypeFilter(func(name string) bool { return false })
-		a.SetFileTypeFilter(nil)
-	})
-}
-
 func TestItemFromDirWithErr(t *testing.T) {
 	err := ItemFromDirWithErr(nil, nil)
 
@@ -166,7 +87,7 @@ func TestItemFromDirWithErr(t *testing.T) {
 }
 
 func TestItemFromDirWithSleep(t *testing.T) {
-	// Create a minimal dir + file structure for remove.ItemFromDir
+	// Create a minimal dir + file structure for ItemFromDirWithSleep
 	dir := &analyze.Dir{
 		File: &analyze.File{
 			Name:  "parent",

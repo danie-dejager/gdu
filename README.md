@@ -2,7 +2,7 @@
 
 <img src="./gdu.png" alt="Gdu " width="200" align="right">
 
-[![Codecov](https://codecov.io/gh/dundee/gdu/branch/master/graph/badge.svg)](https://codecov.io/gh/dundee/gdu)
+[![Codecov](https://codecov.io/gh/dundee/gdu/branch/main/graph/badge.svg)](https://codecov.io/gh/dundee/gdu)
 [![Go Report Card](https://goreportcard.com/badge/github.com/dundee/gdu)](https://goreportcard.com/report/github.com/dundee/gdu)
 [![Maintainability](https://api.codeclimate.com/v1/badges/30d793274607f599e658/maintainability)](https://codeclimate.com/github/dundee/gdu/maintainability)
 [![CodeScene Code Health](https://codescene.io/projects/13129/status-badges/code-health)](https://codescene.io/projects/13129)
@@ -27,6 +27,10 @@ Using curl:
     curl -L https://github.com/dundee/gdu/releases/latest/download/gdu_linux_amd64.tgz | tar xz
     chmod +x gdu_linux_amd64
     mv gdu_linux_amd64 /usr/bin/gdu
+
+Binaries downloaded from the releases page can update themselves with `gdu --self-update`
+(prefix it with `sudo` if the binary is not writable by you).
+Gdu installed by a package manager has to be updated with that package manager.
 
 See the [installation page](./INSTALL.md) for other ways how to install Gdu to your system.
 
@@ -59,7 +63,7 @@ Flags:
       --interactive                    Force interactive mode even when output is not a TTY
   -l, --log-file string                Path to a logfile (default "/dev/null")
       --max-age string                 Include files with mtime no older than DURATION (e.g., 7d, 2h30m, 1y2mo)
-  -m, --max-cores int                  Set max cores that Gdu will use. 8 cores available (default 8)
+  -m, --max-cores int                  Set max cores that Gdu will use, at most 8; 0 leaves it to Go, which follows container limits
       --min-age string                 Include files with mtime at least DURATION old (e.g., 30d, 1w)
       --mouse                          Use mouse
   -c, --no-color                       Do not use colorized output
@@ -73,10 +77,11 @@ Flags:
   -u, --no-unicode                     Do not use Unicode symbols (for size bar)
       --no-view-file                   Do not allow viewing file contents
   -n, --non-interactive                Do not run in interactive mode
-      --output-attrs string            Export only selected JSON attributes (name,asize,dsize,shsize,items,mtime,notreg,ino)
+      --output-attrs string            Export only selected JSON attributes (name,asize,dsize,shsize,items,mtime,notreg,ino,dev)
   -o, --output-file string             Export all info into file as JSON
-  -r, --read-from-storage              Use existing database instead of re-scanning
+  -r, --read-from-storage              Show the analysis stored by an earlier scan in the database (--db) instead of scanning
       --reverse-sort                   Reverse the sorting order in non-interactive mode (smallest to largest by default)
+      --self-update                    Update gdu to the latest release, then run the rest of the command with it (only binaries from GitHub releases)
       --sequential                     Use sequential scanning (intended for rotating HDDs)
       --shell string                   Set the shell spawned with the b key
   -A, --show-annexed-size              Use apparent size of git-annex'ed files in case files are not present locally (real usage is zero)
@@ -147,11 +152,14 @@ Basic list of actions in interactive mode (show help modal for more):
 
     gdu --db=tmp.badger /                 # use persistent key-value storage for saving analysis data
     gdu --db=tmp.db /                     # use persistent SQLite storage for saving analysis data
-    gdu -r /                              # read saved analysis data from persistent key-value storage
+    gdu -r --db=tmp.badger /              # show the analysis saved earlier instead of scanning again
 
     gdu --web /                           # analyze and browse the results in a web browser
     gdu --web --web-listen localhost:8080 /   # serve the web UI on a fixed address
     gdu --web --web-open=false /          # print the URL but do not open a browser
+
+    gdu --self-update                     # update gdu downloaded from GitHub releases to the latest version
+    gdu --self-update /                   # update, then analyze / with the new version
 
 ## Scanning multiple directories
 
@@ -175,9 +183,11 @@ In non-interactive mode (and without `--top` and `--depth` flags), gdu uses a me
 This means memory usage stays constant regardless of how large the scanned directory tree is.
 When `--top` or `--depth` flags are used, the full directory tree is built in memory as in interactive mode.
 
+Directories gdu cannot read are flagged with `!`. In non-interactive mode gdu also reports each of them on stderr, as `du` does (`gdu: cannot read directory '/root/x': Permission denied`); the listing on stdout and the exit status stay as they are. The export (`-o`) marks them with `"read_error":true`, as ncdu does.
+
 Export mode (flag `-o`) outputs all usage data as JSON, which can be later opened using the `-f` flag. In interactive mode, press `Esc` or `Ctrl+C` during a scan to stop scheduling new work and keep the results found so far; pressing `Ctrl+C` again while the scan is stopping quits gdu. If you would rather have the first `Ctrl+C` quit gdu outright, use `--ctrl-c-quits`; `Esc` keeps working either way.
 
-By default the export includes every attribute, and directories always carry their `asize`, `dsize`, and `items` summary stats so they can be preserved on import. Use `--output-attrs=asize,dsize` to emit only selected optional attributes; `name` is always included. Available attributes are `asize`, `dsize`, `shsize`, `items`, `mtime`, `notreg`, and `ino`. A directory that could not be read in full carries `"read_error":true`.
+The export is in ncdu's format, so `ncdu -f` opens it too. As ncdu reads it, a directory's `dsize` is the disk usage of the directory itself; its totals, which gdu reads back, are in `gdu_asize`, `gdu_dsize` and `items`, keys ncdu ignores. Exports written by earlier gdu versions, with the totals in `asize` and `dsize`, and exports written by ncdu are read as they were meant. By default the export includes every attribute. Use `--output-attrs=asize,dsize` to emit only selected optional attributes; `name` is always included. Available attributes are `asize`, `dsize`, `shsize`, `items`, `mtime`, `notreg`, and `ino`. A directory that could not be read in full carries `"read_error":true`.
 
 Gdu honors `BLOCK_SIZE` and `BLOCKSIZE` in terminal output. `BLOCK_SIZE` takes precedence; both accept GNU coreutils block-size values such as `1K`, `kB`, `human-readable`, and `si`. Explicit size-format flags override these environment variables. Exported JSON always retains raw byte values.
 
@@ -201,7 +211,8 @@ folded into their nearest visible parent directory. Scan progress is streamed
 live while the analysis runs.
 
 In the treemap, press `O` to reveal the selected item in the system file
-manager, `D` (or `Delete`) to permanently delete it after confirmation, or `?`
+manager (Finder and Explorer select it, Linux file managers open its
+directory; it is never opened itself), `D` (or `Delete`) to permanently delete it after confirmation, or `?`
 to show the keyboard shortcuts. In the donut view, each row of the table has
 its own reveal and delete buttons that act on that item; deletion asks for
 confirmation with the same dialog. The deletion dialog can suppress further
@@ -262,19 +273,20 @@ By default the server binds to `localhost` on a random free port. Use
 The compiled web assets are embedded in the binary, so no extra files or network
 access are required.
 
-**Security:** browsing is read-only and requires no authentication, so anyone
-who can reach the port sees file names and sizes - keep it bound to
-`localhost` (the default). Reveal and delete actions need more: a request
-that both originates from a loopback address and carries a random token,
-generated fresh for each server run and never served over the API. The URL is
-printed to this process's terminal and passed to the configured browser
-launcher. On Linux, a cold-started browser may retain that URL in its
-world-readable command line; custom browser commands may do the same on any
-platform. On a multi-user machine, use `--web-open=false` and open the printed
-URL from an already-running browser. Pages on another origin or browser tab
-are rejected even if they can reach the port. Binding to a non-loopback address
-makes scan details reachable by other hosts on the network and prints a
-warning.
+**Security:** the URL gdu prints carries a random token, generated fresh for
+each server run and never served over the API. Every request for scan data
+needs it, so other users of the machine cannot list the scanned tree even
+though they can find the port; this matters when gdu runs as root. Reveal and
+delete actions need more: the request must also originate from a loopback
+address. The URL is printed to this process's terminal and passed to the
+configured browser launcher. On Linux, a cold-started browser may retain that
+URL in its world-readable command line; custom browser commands may do the
+same on any platform. On a multi-user machine, use `--web-open=false` and open
+the printed URL from an already-running browser. A page opened without the
+token shows an error; open the printed URL again. Pages on another origin or
+browser tab are rejected even if they can reach the port. Binding to a
+non-loopback address lets anyone on the network with the URL read the scan
+details, over unencrypted HTTP, and prints a warning.
 
 ## File flags
 
@@ -440,6 +452,18 @@ gdu --db analysis.sqlite /        # saves analysis data to SQLite database
 gdu --db analysis.badger /        # saves analysis data to BadgerDB
 gdu -r --db analysis.sqlite /     # reads saved data, does not run analysis again
 ```
+
+Reading saved data (`-r`) needs the database and the directory the analysis was
+saved for; gdu reports an error for a missing database or another directory.
+The analysis of a stopped scan is read like any other. One whose scan never
+ended, because gdu was killed, or that failed to save part of it, is refused,
+as is a database written by another version of gdu: scan again.
+Without `-r`, `--db` always scans and replaces what the database held. gdu only
+replaces a database it created: it refuses a `--db` path holding any other file
+or directory, and leaves the database alone when a run does not scan into it
+(`-f`, `--sequential`). A BadgerDB database is open for the whole run, so a
+second gdu cannot open it at the same time; it reports that another process is
+using it.
 
 ## Running tests
 

@@ -1,9 +1,10 @@
-//go:build (linux && !mips64 && !mipsle && !mips && !mips64le && !ppc64) || darwin || windows || (freebsd && !arm && !386) || (openbsd && !386) || (netbsd && !arm && !386 && !amd64)
+//go:build darwin || (freebsd && (386 || amd64 || arm || arm64)) || (linux && (386 || amd64 || arm || arm64 || loong64 || ppc64le || riscv64 || s390x)) || (netbsd && amd64) || (openbsd && (amd64 || arm64)) || (windows && (386 || amd64 || arm64))
 
 package analyze
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,27 +13,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dundee/gdu/v5/internal/testdir"
-	"github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/internal/testdir"
+	"github.com/dundee/gdu/v6/pkg/fs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestNewSqliteStorage(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
-	assert.NoError(t, err)
-	assert.NotNil(t, storage)
-	defer storage.Close()
-
-	// Test that the database is created
-	_, err = os.Stat(dbPath)
-	assert.NoError(t, err)
-}
-
-func TestNewSqliteStorageNestedDir(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "nested", "dir", "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	assert.NotNil(t, storage)
 	defer storage.Close()
@@ -44,7 +33,7 @@ func TestNewSqliteStorageNestedDir(t *testing.T) {
 
 func TestSqliteStorageClose(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 
 	err = storage.Close()
@@ -57,7 +46,7 @@ func TestSqliteStorageClose(t *testing.T) {
 
 func TestSqliteStorageHasData(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -74,7 +63,7 @@ func TestSqliteStorageHasData(t *testing.T) {
 
 func TestSqliteStorageClearItems(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -91,7 +80,7 @@ func TestSqliteStorageClearItems(t *testing.T) {
 
 func TestSqliteStorageMetadata(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -119,7 +108,7 @@ func TestSqliteStorageMetadata(t *testing.T) {
 
 func TestSqliteStorageInsertAndGetItem(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -144,7 +133,7 @@ func TestSqliteStorageInsertAndGetItem(t *testing.T) {
 
 func TestSqliteStorageInsertAndGetChildren(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -179,7 +168,7 @@ func TestSqliteStorageInsertAndGetChildren(t *testing.T) {
 
 func TestSqliteStorageUpdateItem(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -188,7 +177,7 @@ func TestSqliteStorageUpdateItem(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Update item
-	err = storage.UpdateItem(id, 500, 1000, 10, ' ')
+	err = storage.UpdateItem(id, 500, 1000, 10, time.Now(), ' ')
 	assert.NoError(t, err)
 
 	// Verify update
@@ -201,7 +190,7 @@ func TestSqliteStorageUpdateItem(t *testing.T) {
 
 func TestSqliteStorageBulkInsert(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -219,7 +208,7 @@ func TestSqliteStorageBulkInsert(t *testing.T) {
 	}
 
 	// Update during bulk mode
-	err = storage.UpdateItem(rootID, 10000, 20000, 101, ' ')
+	err = storage.UpdateItem(rootID, 10000, 20000, 101, time.Now(), ' ')
 	assert.NoError(t, err)
 
 	// End bulk insert
@@ -232,48 +221,9 @@ func TestSqliteStorageBulkInsert(t *testing.T) {
 	assert.Len(t, children, 100)
 }
 
-func TestSqliteStorageHasInode(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
-	assert.NoError(t, err)
-	defer storage.Close()
-
-	// No inode initially
-	assert.False(t, storage.HasInode(12345))
-
-	// Insert item with inode
-	_, err = storage.InsertItem(nil, "file", false, 100, 4096, time.Now(), 1, 12345, 'H')
-	assert.NoError(t, err)
-
-	// Now inode exists
-	assert.True(t, storage.HasInode(12345))
-	assert.False(t, storage.HasInode(99999))
-}
-
-func TestSqliteStorageHasInodeBulkMode(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
-	assert.NoError(t, err)
-	defer storage.Close()
-
-	err = storage.BeginBulkInsert()
-	assert.NoError(t, err)
-
-	// Insert item with inode in bulk mode
-	_, err = storage.InsertItem(nil, "file", false, 100, 4096, time.Now(), 1, 12345, 'H')
-	assert.NoError(t, err)
-
-	// Check inode during bulk mode (uses prepared statement)
-	assert.True(t, storage.HasInode(12345))
-	assert.False(t, storage.HasInode(99999))
-
-	err = storage.EndBulkInsert()
-	assert.NoError(t, err)
-}
-
 func TestSqliteItemGetPath(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -303,7 +253,7 @@ func TestSqliteItemGetPath(t *testing.T) {
 
 func TestSqliteItemGetPathLazy(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -329,7 +279,7 @@ func TestSqliteItemGetPathLazy(t *testing.T) {
 
 func TestSqliteItemGetType(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -354,7 +304,7 @@ func TestSqliteItemGetType(t *testing.T) {
 
 func TestSqliteItemGetParent(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -385,7 +335,7 @@ func TestSqliteItemGetParent(t *testing.T) {
 
 func TestSqliteItemGetMultiLinkedInode(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -400,7 +350,7 @@ func TestSqliteItemGetMultiLinkedInode(t *testing.T) {
 
 func TestSqliteItemGetFiles(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -432,29 +382,9 @@ func TestSqliteItemGetFiles(t *testing.T) {
 	assert.Equal(t, "small.txt", files[2].GetName())
 }
 
-func TestSqliteItemGetFilesLocked(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
-	assert.NoError(t, err)
-	defer storage.Close()
-
-	rootID, err := storage.InsertItem(nil, "root", true, 0, 0, time.Now(), 1, 0, ' ')
-	assert.NoError(t, err)
-	_, err = storage.InsertItem(&rootID, "file.txt", false, 100, 4096, time.Now(), 1, 0, ' ')
-	assert.NoError(t, err)
-
-	root, err := storage.GetItemByID(rootID)
-	assert.NoError(t, err)
-
-	// GetFilesLocked should work same as GetFiles
-	files := slices.Collect(root.GetFilesLocked(fs.SortByName, fs.SortAsc))
-	assert.Len(t, files, 1)
-	assert.Equal(t, "file.txt", files[0].GetName())
-}
-
 func TestSnapshotSqliteItemTree(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, storage.Close()) })
 
@@ -474,7 +404,7 @@ func TestSnapshotSqliteItemTree(t *testing.T) {
 }
 
 func TestSqliteAnalyzerCancellationStopsArchivePersistence(t *testing.T) {
-	analyzer, err := CreateSqliteAnalyzer(filepath.Join(t.TempDir(), "test.db"))
+	analyzer, err := createSqliteAnalyzer(filepath.Join(t.TempDir(), "test.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, analyzer.storage.Close()) })
 
@@ -485,53 +415,18 @@ func TestSqliteAnalyzerCancellationStopsArchivePersistence(t *testing.T) {
 		Files: fs.Files{&File{Name: "must-not-be-persisted"}},
 	}
 
-	analyzer.Cancel()
-	analyzer.persistArchive(archive, parentID)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	analyzer.persistArchive(&scan{ctx: ctx}, archive, parentID)
 
 	children, err := analyzer.storage.GetChildren(parentID)
 	require.NoError(t, err)
 	assert.Empty(t, children)
-}
-
-func TestSqliteAnalyzerPreemptiveCancellationSkipsChildDirectory(t *testing.T) {
-	analyzer, err := CreateSqliteAnalyzer(filepath.Join(t.TempDir(), "test.db"))
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, analyzer.storage.Close()) })
-
-	parentID, err := analyzer.storage.InsertItem(nil, "root", true, 0, 0, time.Now(), 1, 0, ' ')
-	require.NoError(t, err)
-	childPath := filepath.Join(t.TempDir(), "unscanned")
-	require.NoError(t, os.Mkdir(childPath, 0o700))
-
-	analyzer.Cancel()
-	assert.Nil(t, analyzer.processDir(childPath, &parentID))
-
-	children, err := analyzer.storage.GetChildren(parentID)
-	require.NoError(t, err)
-	assert.Empty(t, children)
-}
-
-func TestSqliteItemRLock(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
-	assert.NoError(t, err)
-	defer storage.Close()
-
-	id, err := storage.InsertItem(nil, "root", true, 0, 0, time.Now(), 1, 0, ' ')
-	assert.NoError(t, err)
-
-	item, err := storage.GetItemByID(id)
-	assert.NoError(t, err)
-
-	// RLock should return unlock function
-	unlock := item.RLock()
-	assert.NotNil(t, unlock)
-	unlock()
 }
 
 func TestSqliteItemGetItemStats(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -541,7 +436,7 @@ func TestSqliteItemGetItemStats(t *testing.T) {
 	item, err := storage.GetItemByID(id)
 	assert.NoError(t, err)
 
-	count, size, usage := item.GetItemStats(make(fs.HardLinkedItems), false)
+	count, size, usage := item.itemStats(fs.NewHardLinks(), false)
 	assert.Equal(t, int64(5), count)
 	assert.Equal(t, int64(1000), size)
 	assert.Equal(t, int64(2000), usage)
@@ -549,7 +444,7 @@ func TestSqliteItemGetItemStats(t *testing.T) {
 
 func TestSqliteItemUpdateStats(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -560,13 +455,13 @@ func TestSqliteItemUpdateStats(t *testing.T) {
 	assert.NoError(t, err)
 
 	// UpdateStats is a no-op for SqliteItem
-	item.UpdateStats(make(fs.HardLinkedItems))
+	item.UpdateStats(false)
 	// Just verify it doesn't panic
 }
 
 func TestSqliteItemAddFile(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -583,7 +478,7 @@ func TestSqliteItemAddFile(t *testing.T) {
 
 func TestSqliteItemRemoveFile(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -622,29 +517,9 @@ func TestSqliteItemRemoveFile(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestSqliteItemRemoveFileByName(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
-	assert.NoError(t, err)
-	defer storage.Close()
-
-	rootID, _ := storage.InsertItem(nil, "root", true, 100, 200, time.Now(), 2, 0, ' ')
-	storage.InsertItem(&rootID, "file.txt", false, 10, 20, time.Now(), 1, 0, ' ')
-
-	root, _ := storage.GetItemByID(rootID)
-	root.RemoveFileByName("file.txt")
-
-	assert.Equal(t, int64(90), root.GetSize())
-	assert.Equal(t, int64(180), root.GetUsage())
-	assert.Equal(t, int64(1), root.GetItemCount())
-
-	children, _ := storage.GetChildren(rootID)
-	assert.Empty(t, children)
-}
-
 func TestSqliteItemEncodeJSON(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -658,14 +533,14 @@ func TestSqliteItemEncodeJSON(t *testing.T) {
 	err = root.EncodeJSON(&buf, false, nil)
 	assert.NoError(t, err)
 
-	expected := `[{"name":"root","asize":100,"dsize":200,"items":2,"mtime":1600000000},
+	expected := `[{"name":"root","dsize":180,"gdu_asize":100,"gdu_dsize":200,"items":2,"mtime":1600000000},
 {"name":"file.txt","asize":10,"dsize":20,"mtime":1600000000}]`
 	assert.Equal(t, expected, buf.String())
 }
 
 func TestSqliteItemEncodeEmptyDirJSON(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -675,12 +550,12 @@ func TestSqliteItemEncodeEmptyDirJSON(t *testing.T) {
 	var buf bytes.Buffer
 	err = root.EncodeJSON(&buf, false, nil)
 	assert.NoError(t, err)
-	assert.Equal(t, "[{\"name\":\"empty\",\"asize\":0,\"dsize\":0,\"items\":0}\n]", buf.String())
+	assert.Equal(t, "[{\"name\":\"empty\",\"gdu_asize\":0,\"gdu_dsize\":0,\"items\":0}\n]", buf.String())
 }
 
 func TestSqliteItemEncodeJSONWithSelectedAttributes(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -693,13 +568,13 @@ func TestSqliteItemEncodeJSONWithSelectedAttributes(t *testing.T) {
 	err = root.EncodeJSON(&buf, false, fs.JSONAttributes{"asize": {}, "dsize": {}})
 
 	assert.NoError(t, err)
-	assert.Equal(t, `[{"name":"root","asize":100,"dsize":200},
+	assert.Equal(t, `[{"name":"root","dsize":180,"gdu_asize":100,"gdu_dsize":200},
 {"name":"file.txt","asize":10,"dsize":20}]`, buf.String())
 }
 
 func TestSqliteItemEncodeJSONWithSpecialAttributes(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	storage, err := NewSqliteStorage(dbPath)
+	storage, err := openSqliteStorage(dbPath)
 	assert.NoError(t, err)
 	defer storage.Close()
 
@@ -732,88 +607,20 @@ func TestSqliteItemEncodeJSONWithSpecialAttributes(t *testing.T) {
 
 func TestCreateSqliteAnalyzer(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	analyzer, err := CreateSqliteAnalyzer(dbPath)
+	analyzer, err := createSqliteAnalyzer(dbPath)
 	assert.NoError(t, err)
 	assert.NotNil(t, analyzer)
 	defer analyzer.storage.Close()
 }
 
-func TestSqliteAnalyzerSetFollowSymlinks(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	analyzer, err := CreateSqliteAnalyzer(dbPath)
-	assert.NoError(t, err)
-	defer analyzer.storage.Close()
-
-	analyzer.SetFollowSymlinks(true)
-	assert.True(t, analyzer.followSymlinks)
-	analyzer.SetFollowSymlinks(false)
-	assert.False(t, analyzer.followSymlinks)
-}
-
-func TestSqliteAnalyzerSetShowAnnexedSize(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	analyzer, err := CreateSqliteAnalyzer(dbPath)
-	assert.NoError(t, err)
-	defer analyzer.storage.Close()
-
-	analyzer.SetShowAnnexedSize(true)
-	assert.True(t, analyzer.gitAnnexedSize)
-	analyzer.SetShowAnnexedSize(false)
-	assert.False(t, analyzer.gitAnnexedSize)
-}
-
-func TestSqliteAnalyzerSetArchiveBrowsing(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	analyzer, err := CreateSqliteAnalyzer(dbPath)
-	assert.NoError(t, err)
-	defer analyzer.storage.Close()
-
-	analyzer.SetArchiveBrowsing(true)
-	assert.True(t, analyzer.archiveBrowsing)
-	analyzer.SetArchiveBrowsing(false)
-	assert.False(t, analyzer.archiveBrowsing)
-}
-
-func TestSqliteAnalyzerSetTimeFilter(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	analyzer, err := CreateSqliteAnalyzer(dbPath)
-	assert.NoError(t, err)
-	defer analyzer.storage.Close()
-
-	filter := func(mtime time.Time) bool { return true }
-	analyzer.SetTimeFilter(filter)
-	assert.NotNil(t, analyzer.matchesTimeFilterFn)
-}
-
-func TestSqliteAnalyzerSetFileTypeFilter(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	analyzer, err := CreateSqliteAnalyzer(dbPath)
-	assert.NoError(t, err)
-	defer analyzer.storage.Close()
-
-	filter := func(name string) bool { return false }
-	analyzer.SetFileTypeFilter(filter)
-	assert.NotNil(t, analyzer.ignoreFileType)
-}
-
 func TestSqliteAnalyzerGetProgress(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	analyzer, err := CreateSqliteAnalyzer(dbPath)
+	analyzer, err := createSqliteAnalyzer(dbPath)
 	assert.NoError(t, err)
 	defer analyzer.storage.Close()
 
 	progress := analyzer.GetProgress()
 	assert.Equal(t, int64(0), progress.ItemCount)
-}
-
-func TestSqliteAnalyzerGetDone(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	analyzer, err := CreateSqliteAnalyzer(dbPath)
-	assert.NoError(t, err)
-	defer analyzer.storage.Close()
-
-	doneChan := analyzer.GetDone()
-	assert.NotNil(t, doneChan)
 }
 
 func TestSqliteAnalyzerArchiveBrowsing(t *testing.T) {
@@ -827,17 +634,14 @@ func TestSqliteAnalyzerArchiveBrowsing(t *testing.T) {
 	}
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	analyzer, err := CreateSqliteAnalyzer(dbPath)
+	analyzer, err := createSqliteAnalyzer(dbPath)
 	assert.NoError(t, err)
 	defer analyzer.storage.Close()
 
-	analyzer.SetArchiveBrowsing(true)
-
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*SqliteItem)
-
-	analyzer.GetDone().Wait()
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile:      func(_ string) bool { return false },
+		ArchiveBrowsing: true,
+	}).(*SqliteItem)
 
 	// Find the zip file in the results
 	files := slices.Collect(dir.GetFiles(fs.SortByName, fs.SortAsc))
@@ -862,31 +666,18 @@ func runInBash(cmd string) error {
 	return exec.Command(shell, "-c", cmd).Run()
 }
 
-func TestSqliteAnalyzerResetProgress(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	analyzer, err := CreateSqliteAnalyzer(dbPath)
-	assert.NoError(t, err)
-	defer analyzer.storage.Close()
-
-	analyzer.ResetProgress()
-	assert.NotNil(t, analyzer.progressOutChan)
-	assert.NotNil(t, analyzer.doneChan)
-}
-
 func TestSqliteAnalyzerAnalyzeDir(t *testing.T) {
 	fin := testdir.CreateTestDir()
 	defer fin()
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	analyzer, err := CreateSqliteAnalyzer(dbPath)
+	analyzer, err := createSqliteAnalyzer(dbPath)
 	assert.NoError(t, err)
 	defer analyzer.storage.Close()
 
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*SqliteItem)
-
-	analyzer.GetDone().Wait()
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile: func(_ string) bool { return false },
+	}).(*SqliteItem)
 
 	// Test dir info
 	assert.Equal(t, "test_dir", dir.GetName())
@@ -939,15 +730,13 @@ func TestSqliteAnalyzerPropagatesChildPermissionError(t *testing.T) {
 	}
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	analyzer, err := CreateSqliteAnalyzer(dbPath)
+	analyzer, err := createSqliteAnalyzer(dbPath)
 	assert.NoError(t, err)
 	defer analyzer.storage.Close()
 
-	dir := analyzer.AnalyzeDir(
-		rootPath, func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*SqliteItem)
-
-	analyzer.GetDone().Wait()
+	dir := analyzer.AnalyzeDir(context.Background(), rootPath, Options{
+		IgnoreFile: func(_ string) bool { return false },
+	}).(*SqliteItem)
 
 	files := slices.Collect(dir.GetFiles(fs.SortByName, fs.SortAsc))
 	assert.Len(t, files, 1)
@@ -966,15 +755,14 @@ func TestSqliteAnalyzerIgnoreDir(t *testing.T) {
 	defer fin()
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	analyzer, err := CreateSqliteAnalyzer(dbPath)
+	analyzer, err := createSqliteAnalyzer(dbPath)
 	assert.NoError(t, err)
 	defer analyzer.storage.Close()
 
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return true }, func(_ string) bool { return false },
-	).(*SqliteItem)
-
-	analyzer.GetDone().Wait()
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreDir:  func(_, _ string) bool { return true },
+		IgnoreFile: func(_ string) bool { return false },
+	}).(*SqliteItem)
 
 	assert.Equal(t, "test_dir", dir.GetName())
 	assert.Equal(t, int64(1), dir.GetItemCount())
@@ -985,16 +773,14 @@ func TestSqliteAnalyzerIgnoreFileType(t *testing.T) {
 	defer fin()
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	analyzer, err := CreateSqliteAnalyzer(dbPath)
+	analyzer, err := createSqliteAnalyzer(dbPath)
 	assert.NoError(t, err)
 	defer analyzer.storage.Close()
 
 	// Ignore all files
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return true },
-	).(*SqliteItem)
-
-	analyzer.GetDone().Wait()
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile: func(_ string) bool { return true },
+	}).(*SqliteItem)
 
 	// Every file was filtered out, so the whole tree is nothing but empty
 	// directories and collapses to a single item, exactly as
@@ -1022,15 +808,13 @@ func TestSqliteAnalyzerHardlinks(t *testing.T) {
 	assert.NoError(t, err)
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	analyzer, err := CreateSqliteAnalyzer(dbPath)
+	analyzer, err := createSqliteAnalyzer(dbPath)
 	assert.NoError(t, err)
 	defer analyzer.storage.Close()
 
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*SqliteItem)
-
-	analyzer.GetDone().Wait()
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile: func(_ string) bool { return false },
+	}).(*SqliteItem)
 
 	// file2 and file3 are counted just once for size but twice for item count
 	assert.Equal(t, int64(7), dir.GetSize())
@@ -1060,15 +844,13 @@ func TestSqliteAnalyzerSymlink(t *testing.T) {
 	assert.NoError(t, err)
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	analyzer, err := CreateSqliteAnalyzer(dbPath)
+	analyzer, err := createSqliteAnalyzer(dbPath)
 	assert.NoError(t, err)
 	defer analyzer.storage.Close()
 
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*SqliteItem)
-
-	analyzer.GetDone().Wait()
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile: func(_ string) bool { return false },
+	}).(*SqliteItem)
 
 	// Check symlink flag
 	nested := slices.Collect(dir.GetFiles(fs.SortByName, fs.SortAsc))[0].(*SqliteItem)
@@ -1094,17 +876,14 @@ func TestSqliteAnalyzerFollowSymlink(t *testing.T) {
 	assert.NoError(t, err)
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	analyzer, err := CreateSqliteAnalyzer(dbPath)
+	analyzer, err := createSqliteAnalyzer(dbPath)
 	assert.NoError(t, err)
 	defer analyzer.storage.Close()
 
-	analyzer.SetFollowSymlinks(true)
-
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*SqliteItem)
-
-	analyzer.GetDone().Wait()
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile:     func(_ string) bool { return false },
+		FollowSymlinks: true,
+	}).(*SqliteItem)
 
 	// With followSymlinks, file3 should have same size as file2
 	nested := slices.Collect(dir.GetFiles(fs.SortByName, fs.SortAsc))[0].(*SqliteItem)
@@ -1127,18 +906,16 @@ func TestSqliteAnalyzerTimeFilter(t *testing.T) {
 	defer fin()
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	analyzer, err := CreateSqliteAnalyzer(dbPath)
+	analyzer, err := createSqliteAnalyzer(dbPath)
 	assert.NoError(t, err)
 	defer analyzer.storage.Close()
 
 	// Filter out all files (mtime filter that always returns false)
-	analyzer.SetTimeFilter(func(mtime time.Time) bool { return false })
 
-	dir := analyzer.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*SqliteItem)
-
-	analyzer.GetDone().Wait()
+	dir := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile: func(_ string) bool { return false },
+		TimeFilter: func(mtime time.Time) bool { return false },
+	}).(*SqliteItem)
 
 	// As above: nothing survives the filter, so the tree collapses to one item.
 	assert.Equal(t, int64(1), dir.GetItemCount())
@@ -1152,31 +929,65 @@ func TestSqliteAnalyzerLoadFromExisting(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 
 	// First analysis
-	analyzer1, err := CreateSqliteAnalyzer(dbPath)
+	analyzer1, err := createSqliteAnalyzer(dbPath)
 	assert.NoError(t, err)
 
-	dir1 := analyzer1.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*SqliteItem)
-	analyzer1.GetDone().Wait()
+	dir1 := analyzer1.AnalyzeDir(context.Background(), "test_dir", Options{
+		IgnoreFile: func(_ string) bool { return false },
+	}).(*SqliteItem)
 
 	assert.Equal(t, "test_dir", dir1.GetName())
 	assert.Equal(t, int64(5), dir1.GetItemCount())
 
 	analyzer1.storage.Close()
 
-	// Second analysis should load from existing data
-	analyzer2, err := CreateSqliteAnalyzer(dbPath)
+	// changes made since the scan are not in the stored analysis
+	require.NoError(t, os.WriteFile("test_dir/nested/added", []byte("new"), 0o600))
+
+	analyzer2, err := createSqliteAnalyzer(dbPath)
 	assert.NoError(t, err)
 	defer analyzer2.storage.Close()
 
-	dir2 := analyzer2.AnalyzeDir(
-		"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-	).(*SqliteItem)
-	analyzer2.GetDone().Wait()
-
+	dir2, err := analyzer2.LoadAnalysis("test_dir")
+	require.NoError(t, err)
 	assert.Equal(t, "test_dir", dir2.GetName())
 	assert.Equal(t, int64(5), dir2.GetItemCount())
+
+	_, err = analyzer2.LoadAnalysis("test_dir/nested")
+	assert.ErrorContains(t, err, "holds the analysis of test_dir")
+}
+
+func TestSqliteAnalyzerLoadAnalysisFromEmptyDatabase(t *testing.T) {
+	analyzer, err := createSqliteAnalyzer(filepath.Join(t.TempDir(), "test.db"))
+	require.NoError(t, err)
+	defer analyzer.storage.Close()
+
+	_, err = analyzer.LoadAnalysis("test_dir")
+
+	assert.ErrorContains(t, err, "holds no analysis")
+}
+
+// A scan always walks the filesystem, even when the database already holds an
+// analysis, of the same path or of another one.
+func TestSqliteAnalyzerScansEvenWithStoredAnalysis(t *testing.T) {
+	fin := testdir.CreateTestDir()
+	defer fin()
+	noIgnore := func(_, _ string) bool { return false }
+
+	analyzer, err := createSqliteAnalyzer(filepath.Join(t.TempDir(), "test.db"))
+	require.NoError(t, err)
+	defer analyzer.storage.Close()
+
+	analyzer.AnalyzeDir(context.Background(), "test_dir", Options{IgnoreDir: noIgnore})
+	require.NoError(t, os.WriteFile("test_dir/nested/added", []byte("new"), 0o600))
+
+	rescanned := analyzer.AnalyzeDir(context.Background(), "test_dir", Options{IgnoreDir: noIgnore})
+	rescanned.UpdateStats(false)
+	assert.Equal(t, int64(6), rescanned.GetItemCount())
+
+	nested := analyzer.AnalyzeDir(context.Background(), "test_dir/nested", Options{IgnoreDir: noIgnore})
+	assert.Equal(t, "nested", nested.GetName())
+	assert.Equal(t, "test_dir/nested", nested.GetPath())
 }
 
 func TestSqliteAnalyzerProgress(t *testing.T) {
@@ -1184,15 +995,15 @@ func TestSqliteAnalyzerProgress(t *testing.T) {
 	defer fin()
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	analyzer, err := CreateSqliteAnalyzer(dbPath)
+	analyzer, err := createSqliteAnalyzer(dbPath)
 	assert.NoError(t, err)
 	defer analyzer.storage.Close()
 
 	// Start analysis in goroutine
+	done := make(chan struct{})
 	go func() {
-		analyzer.AnalyzeDir(
-			"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-		)
+		defer close(done)
+		analyzer.AnalyzeDir(context.Background(), "test_dir", Options{IgnoreFile: func(_ string) bool { return false }})
 	}()
 
 	// Wait for analysis to make some progress
@@ -1201,7 +1012,7 @@ func TestSqliteAnalyzerProgress(t *testing.T) {
 	progress := analyzer.GetProgress()
 	assert.GreaterOrEqual(t, progress.TotalUsage, int64(0))
 
-	analyzer.GetDone().Wait()
+	<-done
 }
 
 func BenchmarkSqliteAnalyzeDir(b *testing.B) {
@@ -1210,11 +1021,8 @@ func BenchmarkSqliteAnalyzeDir(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		dbPath := filepath.Join(b.TempDir(), "test.db")
-		analyzer, _ := CreateSqliteAnalyzer(dbPath)
-		analyzer.AnalyzeDir(
-			"test_dir", func(_, _ string) bool { return false }, func(_ string) bool { return false },
-		)
-		analyzer.GetDone().Wait()
+		analyzer, _ := createSqliteAnalyzer(dbPath)
+		analyzer.AnalyzeDir(context.Background(), "test_dir", Options{IgnoreFile: func(_ string) bool { return false }})
 		analyzer.storage.Close()
 	}
 }

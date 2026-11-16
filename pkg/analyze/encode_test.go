@@ -2,19 +2,20 @@ package analyze
 
 import (
 	"bytes"
+	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/dundee/gdu/v5/pkg/fs"
-	log "github.com/sirupsen/logrus"
+	"github.com/dundee/gdu/v6/pkg/fs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func init() {
-	log.SetLevel(log.WarnLevel)
+	slog.SetLogLoggerLevel(slog.LevelWarn)
 }
 
 func TestEncode(t *testing.T) {
@@ -68,8 +69,8 @@ func TestEncode(t *testing.T) {
 	assert.Contains(t, buff.String(), `"mtime":1629333600`)
 	assert.Contains(t, buff.String(), `"ino":1234`)
 	assert.Contains(t, buff.String(), `"hlnkc":true`)
-	assert.Contains(t, buff.String(), `"asize":10,"dsize":18,"items":4`)
-	assert.Contains(t, buff.String(), `"name":"nested","asize":9,"dsize":14,"items":3`)
+	assert.Contains(t, buff.String(), `"gdu_asize":10,"gdu_dsize":18,"items":4`)
+	assert.Contains(t, buff.String(), `"name":"nested","gdu_asize":9,"gdu_dsize":14,"items":3`)
 }
 
 func TestEncodeEmptyDir(t *testing.T) {
@@ -79,7 +80,7 @@ func TestEncodeEmptyDir(t *testing.T) {
 	err := dir.EncodeJSON(&buff, false, nil)
 
 	assert.NoError(t, err)
-	assert.Equal(t, "[{\"name\":\"empty\",\"asize\":0,\"dsize\":0,\"items\":0}\n]", buff.String())
+	assert.Equal(t, "[{\"name\":\"empty\",\"gdu_asize\":0,\"gdu_dsize\":0,\"items\":0}\n]", buff.String())
 }
 
 func TestEncodeSelectedAttributes(t *testing.T) {
@@ -104,7 +105,7 @@ func TestEncodeSelectedAttributes(t *testing.T) {
 	err := dir.EncodeJSON(&buff, true, fs.JSONAttributes{"asize": {}, "dsize": {}})
 
 	assert.NoError(t, err)
-	assert.Contains(t, buff.String(), `"name":"test_dir","asize":10,"dsize":18`)
+	assert.Contains(t, buff.String(), `"name":"test_dir","gdu_asize":10,"gdu_dsize":18}`)
 	assert.Contains(t, buff.String(), `"name":"file","asize":3,"dsize":4`)
 	assert.NotContains(t, buff.String(), `"mtime"`)
 	assert.NotContains(t, buff.String(), `"notreg"`)
@@ -180,9 +181,8 @@ func TestExportMarksAnUnreadableDirectory(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 
 	a := CreateAnalyzer()
-	root := a.AnalyzeDir(dir, func(_, _ string) bool { return false }, func(_ string) bool { return false })
-	a.GetDone().Wait()
-	root.UpdateStats(make(fs.HardLinkedItems))
+	root := a.AnalyzeDir(context.Background(), dir, Options{IgnoreFile: func(_ string) bool { return false }})
+	root.UpdateStats(false)
 
 	var buff bytes.Buffer
 	require.NoError(t, root.EncodeJSON(&buff, true, nil))

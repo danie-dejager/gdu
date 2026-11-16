@@ -4,21 +4,10 @@ import (
 	"os"
 )
 
-func getPlatformSpecificUsageAndMli(info os.FileInfo, _ string) (usage int64, ino uint64) {
-	return info.Size(), 0 // No block info on Plan9, use apparent size
-}
-
-func setPlatformSpecificAttrs(file *File, f os.FileInfo, path string) {
-	file.Mtime = f.ModTime()
-	file.Usage, _ = getPlatformSpecificUsageAndMli(f, path)
-}
-
-func setDirPlatformSpecificAttrs(dir *Dir, path string) {
-	stat, err := os.Stat(path)
-	if err != nil {
-		return
-	}
-	dir.Mtime = stat.ModTime()
+// fileStats returns the apparent size as the disk usage: Plan9 exposes no
+// block allocation. Hard links are not identified.
+func fileStats(info os.FileInfo, _ string) (usage int64, link inodeKey) {
+	return info.Size(), link
 }
 
 // dirOwnUsage returns 0: Plan9 exposes no block allocation for a
@@ -32,7 +21,7 @@ func dirInfoOwnUsage(os.FileInfo) int64 {
 	return 0
 }
 
-// getSyscallStats extracts usage and inode info from os.FileInfo
-func getSyscallStats(info os.FileInfo, path string) (usage int64, mli uint64) {
-	return getPlatformSpecificUsageAndMli(info, path)
+// dirInfoDevice returns 0: hard links are not identified on Plan9.
+func dirInfoDevice(os.FileInfo) uint64 {
+	return 0
 }

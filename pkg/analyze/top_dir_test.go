@@ -1,30 +1,13 @@
 package analyze
 
 import (
+	"bytes"
 	"testing"
 
-	"github.com/dundee/gdu/v5/pkg/fs"
+	"github.com/dundee/gdu/v6/pkg/fs"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
-
-func TestTopDirAddUsage(t *testing.T) {
-	td := &TopDir{Name: "test"}
-	td.AddUsage(100, 200, 5)
-	assert.Equal(t, int64(100), td.Size.Load())
-	assert.Equal(t, int64(200), td.Usage.Load())
-	assert.Equal(t, int64(5), td.ItemCount.Load())
-
-	td.AddUsage(50, 80, 3)
-	assert.Equal(t, int64(150), td.Size.Load())
-	assert.Equal(t, int64(280), td.Usage.Load())
-	assert.Equal(t, int64(8), td.ItemCount.Load())
-}
-
-func TestTopDirSetFlag(t *testing.T) {
-	td := &TopDir{Name: "test", Flag: ' '}
-	td.SetFlag('!')
-	assert.Equal(t, '!', td.Flag)
-}
 
 func TestSimpleDirGetName(t *testing.T) {
 	d := &SimpleDir{SimpleFile: SimpleFile{Name: "mydir"}}
@@ -51,7 +34,7 @@ func TestSimpleDirUpdateStats(t *testing.T) {
 		},
 	}
 
-	d.UpdateStats(make(fs.HardLinkedItems))
+	d.UpdateStats(false)
 
 	assert.Equal(t, int64(100+50+300), d.Size)
 	assert.Equal(t, int64(200+80+400), d.Usage)
@@ -64,11 +47,11 @@ func TestEmptySimpleDirUpdateStats(t *testing.T) {
 		Files:      []SimpleFile{},
 	}
 
-	d.UpdateStats(make(fs.HardLinkedItems))
+	d.UpdateStats(false)
 
 	assert.Equal(t, int64(512), d.Size)
 	assert.Equal(t, int64(0), d.Usage)
-	assert.Equal(t, int64(0), d.ItemCount)
+	assert.Equal(t, int64(1), d.ItemCount, "the directory itself, as Dir counts it")
 }
 
 func TestSimpleDirUpdateStatsErrorFlag(t *testing.T) {
@@ -79,7 +62,7 @@ func TestSimpleDirUpdateStatsErrorFlag(t *testing.T) {
 		},
 	}
 
-	d.UpdateStats(make(fs.HardLinkedItems))
+	d.UpdateStats(false)
 	assert.Equal(t, '.', d.Flag)
 }
 
@@ -91,7 +74,7 @@ func TestSimpleDirUpdateStatsErrorFlagPreserved(t *testing.T) {
 		},
 	}
 
-	d.UpdateStats(make(fs.HardLinkedItems))
+	d.UpdateStats(false)
 	// '!' flag on dir should be preserved (not downgraded to '.')
 	assert.Equal(t, '!', d.Flag)
 }
@@ -104,7 +87,7 @@ func TestSimpleDirUpdateStatsDotFlag(t *testing.T) {
 		},
 	}
 
-	d.UpdateStats(make(fs.HardLinkedItems))
+	d.UpdateStats(false)
 	assert.Equal(t, '.', d.Flag)
 }
 
@@ -155,23 +138,34 @@ func TestSimpleDirGetFilesDirVsFile(t *testing.T) {
 	}
 }
 
-func TestSimpleDirPanics(t *testing.T) {
-	d := &SimpleDir{}
+// The top-dir analyzer's directory is an item like any other: it reads, takes
+// a parent and exports, rather than panicking.
+func TestSimpleDirIsAnItem(t *testing.T) {
+	d := &SimpleDir{
+		SimpleFile: SimpleFile{Name: "top", Flag: ' '},
+		BasePath:   "/base",
+		Files: []SimpleFile{
+			{Name: "sub", IsDir: true, Size: 10, Usage: 4096, ItemCount: 3, Flag: ' '},
+			{Name: "file", Size: 5, Usage: 4096, ItemCount: 1, Flag: ' '},
+		},
+	}
+	d.UpdateStats(false)
 
-	assert.Panics(t, func() { d.GetFlag() })
-	assert.Panics(t, func() { d.GetType() })
-	assert.Panics(t, func() { d.GetMtime() })
-	assert.Panics(t, func() { d.GetItemCount() })
-	assert.Panics(t, func() { d.GetParent() })
-	assert.Panics(t, func() { d.SetParent(nil) })
-	assert.Panics(t, func() { d.GetMultiLinkedInode() })
-	assert.Panics(t, func() { d.EncodeJSON(nil, false, nil) })
-	assert.Panics(t, func() { d.GetItemStats(nil, false) })
-	assert.Panics(t, func() { d.AddFile(nil) })
-	assert.Panics(t, func() {
-		d.GetFilesLocked(fs.SortBySize, fs.SortAsc)
-	})
-	assert.Panics(t, func() { d.RemoveFile(nil) })
-	assert.Panics(t, func() { d.RemoveFileByName("x") })
-	assert.Panics(t, func() { d.RLock() })
+	assert.Equal(t, "Directory", d.GetType())
+	assert.Nil(t, d.GetParent())
+	assert.Equal(t, uint64(0), d.GetMultiLinkedInode())
+	parent := &Dir{File: &File{Name: "parent"}}
+	d.SetParent(parent)
+	assert.Same(t, parent, d.GetParent())
+
+	count, size, usage := d.itemStats(nil, false)
+	assert.Equal(t, int64(5), count)
+	assert.Equal(t, int64(15), size)
+	assert.Equal(t, int64(8192), usage)
+
+	var buff bytes.Buffer
+	require.NoError(t, d.EncodeJSON(&buff, true, nil))
+	assert.Contains(t, buff.String(), `"name":"/base/top"`)
+	assert.Contains(t, buff.String(), `"name":"sub"`)
+	assert.Contains(t, buff.String(), `"name":"file","asize":5`)
 }

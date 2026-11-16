@@ -1,17 +1,26 @@
 NAME := gdu
-MAJOR_VER := v5
+MAJOR_VER := v6
 PACKAGE := github.com/dundee/$(NAME)/$(MAJOR_VER)
 CMD_GDU := cmd/gdu
 VERSION := $(shell git describe --tags 2>/dev/null)
 NAMEVER := $(NAME)-$(subst v,,$(VERSION))
 DATE := $(shell date +'%Y-%m-%d')
 GO := go
-GOFLAGS ?= -buildmode=pie -trimpath -mod=readonly -modcacherw -pgo=default.pgo
-GOFLAGS_STATIC ?= -trimpath -mod=readonly -modcacherw -pgo=default.pgo
+# The PGO profile stays out of cmd/gdu: there, go test would apply it to the
+# test of cmd/gdu only (-pgo=auto), and a coverage build of ./... then links
+# a package built with and without it ("fingerprint mismatch"). So every
+# release build names it.
+PGO := -pgo=default.pgo
+GOFLAGS ?= -buildmode=pie -trimpath -mod=readonly -modcacherw $(PGO)
+GOFLAGS_STATIC ?= -trimpath -mod=readonly -modcacherw $(PGO)
+# every release binary: PGO, and no paths of the build machine in it
+GOFLAGS_RELEASE ?= -trimpath -mod=readonly -modcacherw $(PGO)
 LDFLAGS := -s -w -extldflags '-static' \
 	-X '$(PACKAGE)/build.Version=$(VERSION)' \
 	-X '$(PACKAGE)/build.User=$(shell id -u -n)' \
 	-X '$(PACKAGE)/build.Time=$(shell LC_ALL=en_US.UTF-8 date)'
+# Only binaries attached to GitHub releases may replace themselves (--self-update).
+LDFLAGS_RELEASE := $(LDFLAGS) -X '$(PACKAGE)/build.SelfUpdate=true'
 TAR := tar
 ifeq ($(shell uname -s),Darwin)
 	TAR := gtar # brew install gnu-tar
@@ -29,7 +38,7 @@ vendor: go.mod go.sum
 
 tarball: vendor
 	-mkdir dist
-	$(TAR) czf dist/$(NAMEVER).tgz --transform "s,^,$(NAMEVER)/," --anchored --exclude dist --exclude test_dir --exclude coverage.txt --exclude webui/frontend/node_modules *
+	$(TAR) czf dist/$(NAMEVER).tgz --transform "s,^,$(NAMEVER)/," --anchored --exclude dist --exclude test_dir --exclude coverage.txt --exclude internal/webui/frontend/node_modules *
 
 build:
 	@echo "Version: " $(VERSION)
@@ -41,16 +50,17 @@ build-static:
 	mkdir -p dist
 	GOFLAGS="$(GOFLAGS_STATIC)" CGO_ENABLED=0 $(GO) build -ldflags="$(LDFLAGS)" -o dist/$(NAME) $(PACKAGE)/$(CMD_GDU)
 
-# build-web compiles and minifies the React web UI into webui/dist, which is
+# build-web compiles and minifies the React web UI into internal/webui/dist, which is
 # committed and embedded into the binary. Requires Node.js. Pure-Go builds
 # (build/build-static/build-all) do not need this; they use the committed dist.
 build-web:
-	cd webui/frontend && npm ci && npm run build
+	cd internal/webui/frontend && npm ci && npm run build
 
 build-docker:
 	@echo "Version: " $(VERSION)
 	docker build . --tag ghcr.io/dundee/gdu:$(VERSION)
 
+build-all: export GOFLAGS = $(GOFLAGS_RELEASE)
 build-all:
 	@echo "Version: " $(VERSION)
 	-mkdir dist
@@ -58,26 +68,26 @@ build-all:
 		-os="darwin" \
 		-arch="amd64 arm64" \
 		-output="dist/gdu_{{.OS}}_{{.Arch}}" \
-		-ldflags="$(LDFLAGS)" \
+		-ldflags="$(LDFLAGS_RELEASE)" \
 		$(PACKAGE)/$(CMD_GDU)
 
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -ldflags="$(LDFLAGS)" -o dist/gdu_windows_amd64.exe $(PACKAGE)/$(CMD_GDU)
-	CGO_ENABLED=0 GOOS=windows GOARCH=arm64 $(GO) build -ldflags="$(LDFLAGS)" -o dist/gdu_windows_arm64.exe $(PACKAGE)/$(CMD_GDU)
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -ldflags="$(LDFLAGS_RELEASE)" -o dist/gdu_windows_amd64.exe $(PACKAGE)/$(CMD_GDU)
+	CGO_ENABLED=0 GOOS=windows GOARCH=arm64 $(GO) build -ldflags="$(LDFLAGS_RELEASE)" -o dist/gdu_windows_arm64.exe $(PACKAGE)/$(CMD_GDU)
 
 	CGO_ENABLED=0 gox \
 		-os="linux freebsd netbsd openbsd" \
 		-output="dist/gdu_{{.OS}}_{{.Arch}}" \
-		-ldflags="$(LDFLAGS)" \
+		-ldflags="$(LDFLAGS_RELEASE)" \
 		$(PACKAGE)/$(CMD_GDU)
 
-	GOFLAGS="$(GOFLAGS)" CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -ldflags="$(LDFLAGS)" -o dist/gdu_linux_amd64 $(PACKAGE)/$(CMD_GDU)
-	GOFLAGS="$(GOFLAGS_STATIC)" CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -ldflags="$(LDFLAGS)" -o dist/gdu_linux_amd64_static $(PACKAGE)/$(CMD_GDU)
+	GOFLAGS="$(GOFLAGS)" CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -ldflags="$(LDFLAGS_RELEASE)" -o dist/gdu_linux_amd64 $(PACKAGE)/$(CMD_GDU)
+	GOFLAGS="$(GOFLAGS_STATIC)" CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -ldflags="$(LDFLAGS_RELEASE)" -o dist/gdu_linux_amd64_static $(PACKAGE)/$(CMD_GDU)
 
-	CGO_ENABLED=0 GOOS=linux GOARM=5 GOARCH=arm $(GO) build -ldflags="$(LDFLAGS)" -o dist/gdu_linux_armv5l $(PACKAGE)/$(CMD_GDU)
-	CGO_ENABLED=0 GOOS=linux GOARM=6 GOARCH=arm $(GO) build -ldflags="$(LDFLAGS)" -o dist/gdu_linux_armv6l $(PACKAGE)/$(CMD_GDU)
-	CGO_ENABLED=0 GOOS=linux GOARM=7 GOARCH=arm $(GO) build -ldflags="$(LDFLAGS)" -o dist/gdu_linux_armv7l $(PACKAGE)/$(CMD_GDU)
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -ldflags="$(LDFLAGS)" -o dist/gdu_linux_arm64 $(PACKAGE)/$(CMD_GDU)
-	CGO_ENABLED=0 GOOS=android GOARCH=arm64 $(GO) build -ldflags="$(LDFLAGS)" -o dist/gdu_android_arm64 $(PACKAGE)/$(CMD_GDU)
+	CGO_ENABLED=0 GOOS=linux GOARM=5 GOARCH=arm $(GO) build -ldflags="$(LDFLAGS_RELEASE)" -o dist/gdu_linux_armv5l $(PACKAGE)/$(CMD_GDU)
+	CGO_ENABLED=0 GOOS=linux GOARM=6 GOARCH=arm $(GO) build -ldflags="$(LDFLAGS_RELEASE)" -o dist/gdu_linux_armv6l $(PACKAGE)/$(CMD_GDU)
+	CGO_ENABLED=0 GOOS=linux GOARM=7 GOARCH=arm $(GO) build -ldflags="$(LDFLAGS_RELEASE)" -o dist/gdu_linux_armv7l $(PACKAGE)/$(CMD_GDU)
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -ldflags="$(LDFLAGS_RELEASE)" -o dist/gdu_linux_arm64 $(PACKAGE)/$(CMD_GDU)
+	CGO_ENABLED=0 GOOS=android GOARCH=arm64 $(GO) build -ldflags="$(LDFLAGS_RELEASE)" -o dist/gdu_android_arm64 $(PACKAGE)/$(CMD_GDU)
 
 	cd dist; for file in gdu_linux_* gdu_darwin_* gdu_netbsd_* gdu_openbsd_* gdu_freebsd_* gdu_android_*; do tar czf $$file.tgz $$file; done
 	cd dist; for file in gdu_windows_*; do zip $$file.zip $$file; done
@@ -99,7 +109,7 @@ test:
 	gotestsum
 
 test-web:
-	cd webui/frontend && npm ci && npm test
+	cd internal/webui/frontend && npm ci && npm test
 
 coverage:
 	gotestsum -- -race -coverprofile=coverage.txt -covermode=atomic ./...

@@ -5,32 +5,28 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/http/pprof"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-	log "github.com/sirupsen/logrus"
 
-	"github.com/dundee/gdu/v5/build"
-	"github.com/dundee/gdu/v5/internal/common"
-	"github.com/dundee/gdu/v5/pkg/analyze"
-	"github.com/dundee/gdu/v5/pkg/cleanup"
-	"github.com/dundee/gdu/v5/pkg/device"
-	gfs "github.com/dundee/gdu/v5/pkg/fs"
-	"github.com/dundee/gdu/v5/pkg/timefilter"
-	"github.com/dundee/gdu/v5/report"
-	"github.com/dundee/gdu/v5/stdout"
-	"github.com/dundee/gdu/v5/tui"
-	"github.com/dundee/gdu/v5/webui"
+	"github.com/dundee/gdu/v6/build"
+	"github.com/dundee/gdu/v6/internal/config"
+	"github.com/dundee/gdu/v6/internal/report"
+	"github.com/dundee/gdu/v6/internal/stdout"
+	"github.com/dundee/gdu/v6/internal/tui"
+	"github.com/dundee/gdu/v6/internal/webui"
+	"github.com/dundee/gdu/v6/pkg/analyze"
+	"github.com/dundee/gdu/v6/pkg/device"
+	gfs "github.com/dundee/gdu/v6/pkg/fs"
 )
 
-// UI is common interface for both terminal UI and text output
+// UI is what every frontend does; it is configured when it is created.
 type UI interface {
 	ListDevices(getter device.DevicesInfoGetter) error
 	AnalyzePath(path string, parentDir gfs.Item) error
@@ -39,94 +35,83 @@ type UI interface {
 	// return an error.
 	AnalyzePaths(paths []string) error
 	ReadAnalysis(input io.Reader) error
-	ReadFromStorage(storagePath, path string) error
-	SetIgnoreTypes(types []string)
-	SetIgnoreDirPaths(paths []string)
-	SetIgnoreDirPatterns(paths []string) error
-	SetIgnoreFromFile(ignoreFile string) error
-	SetIgnoreFromGitignoreFile(ignoreFile string, scanRoots []string) error
-	SetIgnoreHidden(value bool)
-	SetIgnoreOtherFilesystems(value bool)
-	SetIncludeTypes(types []string)
-	SetFollowSymlinks(value bool)
-	SetShowAnnexedSize(value bool)
-	SetExclusiveSize(value bool)
-	SetAnalyzer(analyzer common.Analyzer)
-	SetTimeFilter(timeFilter common.TimeFilter)
-	SetArchiveBrowsing(value bool)
-	SetCollapsePath(value bool)
-	SetShowSymlinkTarget(value bool)
+	// ReadFromStorage presents the analysis of path stored by an earlier scan
+	// in the database of the analyzer (--db).
+	ReadFromStorage(path string) error
 	StartUILoop() error
 }
 
 // Flags define flags accepted by Run
 type Flags struct {
-	Style               Style     `yaml:"style"`
-	Sorting             Sorting   `yaml:"sorting"`
-	CfgFile             string    `yaml:"-"`
-	LogFile             string    `yaml:"log-file"`
-	InputFile           string    `yaml:"input-file"`
-	OutputFile          string    `yaml:"output-file"`
-	OutputAttrs         string    `yaml:"output-attrs"`
-	IgnoreFromFile      string    `yaml:"ignore-from-file"`
-	IgnoreFromGitignore string    `yaml:"ignore-from-gitignore"`
-	IgnoreDirs          []string  `yaml:"ignore-dirs"`
-	IgnoreDirPatterns   []string  `yaml:"ignore-dir-patterns"`
-	TypeFilter          []string  `yaml:"type"`
-	ExcludeTypeFilter   []string  `yaml:"exclude-type"`
-	MaxCores            int       `yaml:"max-cores"`
-	Top                 int       `yaml:"top"`
-	Depth               int       `yaml:"depth"`
-	SequentialScanning  bool      `yaml:"sequential-scanning"`
-	ShowDisks           bool      `yaml:"-"`
-	ShowApparentSize    bool      `yaml:"show-apparent-size"`
-	ShowRelativeSize    bool      `yaml:"show-relative-size"`
-	ShowAnnexedSize     bool      `yaml:"show-annexed-size"`
-	ExclusiveSize       bool      `yaml:"exclusive-size"`
-	ShowVersion         bool      `yaml:"-"`
-	ShowItemCount       bool      `yaml:"show-item-count"`
-	ShowMTime           bool      `yaml:"show-mtime"`
-	NoColor             bool      `yaml:"no-color"`
-	Mouse               bool      `yaml:"mouse"`
-	NonInteractive      bool      `yaml:"non-interactive"`
-	Interactive         bool      `yaml:"interactive"`
-	NoProgress          bool      `yaml:"no-progress"`
-	NoUnicode           bool      `yaml:"no-unicode"`
-	NoCross             bool      `yaml:"no-cross"`
-	NoHidden            bool      `yaml:"no-hidden"`
-	NoDelete            bool      `yaml:"no-delete"`
-	NoViewFile          bool      `yaml:"no-view-file"`
-	NoSpawnShell        bool      `yaml:"no-spawn-shell"`
-	NoConfirmQuit       bool      `yaml:"no-confirm-quit"`
-	FollowSymlinks      bool      `yaml:"follow-symlinks"`
-	Profiling           bool      `yaml:"profiling"`
-	ReadFromStorage     bool      `yaml:"read-from-storage"`
-	DbPath              string    `yaml:"db"`
-	Summarize           bool      `yaml:"summarize"`
-	UseSIPrefix         bool      `yaml:"use-si-prefix"`
-	NoPrefix            bool      `yaml:"no-prefix"`
-	ShowInKiB           bool      `yaml:"show-in-kib"`
-	WriteConfig         bool      `yaml:"-"`
-	ReverseSort         bool      `yaml:"reverse-sort"`
-	ChangeCwd           bool      `yaml:"change-cwd"`
-	DeleteInBackground  bool      `yaml:"delete-in-background"`
-	DeleteInParallel    bool      `yaml:"delete-in-parallel"`
-	TrashCommand        string    `yaml:"trash-command"`
-	Shell               string    `yaml:"shell"`
-	Since               string    `yaml:"since"`
-	Until               string    `yaml:"until"`
-	MaxAge              string    `yaml:"max-age"`
-	MinAge              string    `yaml:"min-age"`
-	ArchiveBrowsing     bool      `yaml:"archive-browsing"`
-	CollapsePath        bool      `yaml:"collapse-path"`
-	ShowSymlinkTarget   bool      `yaml:"show-symlink-target"`
-	CtrlCQuits          bool      `yaml:"ctrl-c-quits"`
-	BrowseParentDirs    bool      `yaml:"browse-parent-dirs"`
-	Web                 bool      `yaml:"-"`
-	WebConfig           WebConfig `yaml:"web"`
+	Style               Style    `yaml:"style"`
+	Sorting             Sorting  `yaml:"sorting"`
+	CfgFile             string   `yaml:"-"`
+	LogFile             string   `yaml:"log-file"`
+	InputFile           string   `yaml:"input-file"`
+	OutputFile          string   `yaml:"output-file"`
+	OutputAttrs         string   `yaml:"output-attrs"`
+	IgnoreFromFile      string   `yaml:"ignore-from-file"`
+	IgnoreFromGitignore string   `yaml:"ignore-from-gitignore"`
+	IgnoreDirs          []string `yaml:"ignore-dirs"`
+	IgnoreDirPatterns   []string `yaml:"ignore-dir-patterns"`
+	TypeFilter          []string `yaml:"type"`
+	ExcludeTypeFilter   []string `yaml:"exclude-type"`
+	// MaxCores bounds the processors gdu uses; the gdu command sets it for
+	// the process, Run does not
+	MaxCores           int       `yaml:"max-cores"`
+	Top                int       `yaml:"top"`
+	Depth              int       `yaml:"depth"`
+	SequentialScanning bool      `yaml:"sequential-scanning"`
+	ShowDisks          bool      `yaml:"-"`
+	ShowApparentSize   bool      `yaml:"show-apparent-size"`
+	ShowRelativeSize   bool      `yaml:"show-relative-size"`
+	ShowAnnexedSize    bool      `yaml:"show-annexed-size"`
+	ExclusiveSize      bool      `yaml:"exclusive-size"`
+	ShowVersion        bool      `yaml:"-"`
+	SelfUpdate         bool      `yaml:"-"`
+	ShowItemCount      bool      `yaml:"show-item-count"`
+	ShowMTime          bool      `yaml:"show-mtime"`
+	NoColor            bool      `yaml:"no-color"`
+	Mouse              bool      `yaml:"mouse"`
+	NonInteractive     bool      `yaml:"non-interactive"`
+	Interactive        bool      `yaml:"interactive"`
+	NoProgress         bool      `yaml:"no-progress"`
+	NoUnicode          bool      `yaml:"no-unicode"`
+	NoCross            bool      `yaml:"no-cross"`
+	NoHidden           bool      `yaml:"no-hidden"`
+	NoDelete           bool      `yaml:"no-delete"`
+	NoViewFile         bool      `yaml:"no-view-file"`
+	NoSpawnShell       bool      `yaml:"no-spawn-shell"`
+	NoConfirmQuit      bool      `yaml:"no-confirm-quit"`
+	FollowSymlinks     bool      `yaml:"follow-symlinks"`
+	Profiling          bool      `yaml:"profiling"`
+	ReadFromStorage    bool      `yaml:"read-from-storage"`
+	DbPath             string    `yaml:"db"`
+	Summarize          bool      `yaml:"summarize"`
+	UseSIPrefix        bool      `yaml:"use-si-prefix"`
+	NoPrefix           bool      `yaml:"no-prefix"`
+	ShowInKiB          bool      `yaml:"show-in-kib"`
+	WriteConfig        bool      `yaml:"-"`
+	ReverseSort        bool      `yaml:"reverse-sort"`
+	ChangeCwd          bool      `yaml:"change-cwd"`
+	DeleteInBackground bool      `yaml:"delete-in-background"`
+	DeleteInParallel   bool      `yaml:"delete-in-parallel"`
+	TrashCommand       string    `yaml:"trash-command"`
+	Shell              string    `yaml:"shell"`
+	Since              string    `yaml:"since"`
+	Until              string    `yaml:"until"`
+	MaxAge             string    `yaml:"max-age"`
+	MinAge             string    `yaml:"min-age"`
+	ArchiveBrowsing    bool      `yaml:"archive-browsing"`
+	CollapsePath       bool      `yaml:"collapse-path"`
+	ShowSymlinkTarget  bool      `yaml:"show-symlink-target"`
+	CtrlCQuits         bool      `yaml:"ctrl-c-quits"`
+	BrowseParentDirs   bool      `yaml:"browse-parent-dirs"`
+	Web                bool      `yaml:"-"`
+	WebConfig          WebConfig `yaml:"web"`
 	// Cleanup holds user rules and exclusions for the web UI's cleanup
 	// projections.
-	Cleanup cleanup.Config `yaml:"cleanup"`
+	Cleanup CleanupConfig `yaml:"cleanup"`
 }
 
 // WebConfig defines the web UI options that can be set from the config file.
@@ -215,10 +200,29 @@ type Sorting struct {
 	Order string `yaml:"order"`
 }
 
+// TermApplication is the terminal application gdu runs its interactive UI in,
+// usually a *tview.Application.
+type TermApplication interface {
+	Run() error
+	Stop()
+	Suspend(f func()) bool
+	SetRoot(root tview.Primitive, fullscreen bool) *tview.Application
+	SetFocus(p tview.Primitive) *tview.Application
+	SetInputCapture(capture func(event *tcell.EventKey) *tcell.EventKey) *tview.Application
+	SetMouseCapture(
+		capture func(event *tcell.EventMouse, action tview.MouseAction) (*tcell.EventMouse, tview.MouseAction),
+	) *tview.Application
+	QueueUpdateDraw(f func()) *tview.Application
+	SetBeforeDrawFunc(func(screen tcell.Screen) bool) *tview.Application
+}
+
 // App defines the main application
 type App struct {
-	Writer      io.Writer
-	TermApp     common.TermApplication
+	Writer io.Writer
+	// ErrWriter is told what went wrong without stopping gdu, such as the
+	// directories a scan could not read; os.Stderr when nil
+	ErrWriter   io.Writer
+	TermApp     TermApplication
 	Screen      tcell.Screen
 	Getter      device.DevicesInfoGetter
 	Flags       *Flags
@@ -227,16 +231,8 @@ type App struct {
 	Istty       bool
 }
 
-func init() {
-	http.DefaultServeMux = http.NewServeMux()
-}
-
 // Run starts gdu main logic
-//
-//nolint:gocyclo,funlen // App function is a suite of if statements
-func (a *App) Run() error {
-	var ui UI
-
+func (a *App) Run() (err error) {
 	if a.Flags.ShowVersion {
 		fmt.Fprintln(a.Writer, "Version:\t", build.Version)
 		fmt.Fprintln(a.Writer, "Built time:\t", build.Time)
@@ -244,127 +240,39 @@ func (a *App) Run() error {
 		return nil
 	}
 
-	log.Printf("Runtime flags: %+v", *a.Flags)
-
-	if a.Flags.NoPrefix && a.Flags.UseSIPrefix {
-		return fmt.Errorf("--no-prefix and --si cannot be used at once")
-	}
-
-	if a.Flags.NonInteractive && a.Flags.Interactive {
-		return fmt.Errorf("--interactive and --non-interactive cannot be used at once")
-	}
-
-	outputAttributes, err := parseJSONAttributes(a.Flags.OutputAttrs)
-	if err != nil {
-		return err
-	}
-	if a.Flags.OutputAttrs != "" && a.Flags.OutputFile == "" {
-		return errors.New("--output-attrs requires --output-file")
-	}
+	slog.Info("runtime flags", "flags", *a.Flags)
 
 	paths, err := a.resolvePaths()
 	if err != nil {
 		return err
 	}
-	if len(paths) > 1 {
-		if err := a.checkMultiPathSupport(); err != nil {
-			return err
-		}
+	if err := a.validate(paths); err != nil {
+		return err
 	}
-
-	ui, err = a.createUI(outputAttributes)
+	settings, err := a.settings(paths)
 	if err != nil {
 		return err
 	}
+	slog.Info("settings", "settings", settings)
 
-	if a.Flags.DbPath != "" {
-		if !a.Flags.ReadFromStorage {
-			// Remove existing db before re-scan
-			if strings.HasSuffix(a.Flags.DbPath, ".badger") {
-				os.RemoveAll(a.Flags.DbPath)
-			} else {
-				os.Remove(a.Flags.DbPath)
+	front := a.frontend()
+	analyzer, err := a.analyzer(front, &settings)
+	if err != nil {
+		return err
+	}
+	if db, ok := analyzer.(analyze.Database); ok {
+		// a database stays open for the run, and closing it writes out what
+		// it holds in memory
+		defer func() {
+			if closeErr := db.Close(); closeErr != nil {
+				err = errors.Join(err, fmt.Errorf("closing the database: %w", closeErr))
 			}
-		}
-		if strings.HasSuffix(a.Flags.DbPath, ".badger") {
-			ui.SetAnalyzer(analyze.CreateStoredAnalyzer(a.Flags.DbPath))
-		} else {
-			sqliteAnalyzer, err := analyze.CreateSqliteAnalyzer(a.Flags.DbPath)
-			if err != nil {
-				return fmt.Errorf("creating sqlite analyzer: %w", err)
-			}
-			ui.SetAnalyzer(sqliteAnalyzer)
-		}
+		}()
 	}
-	if a.Flags.SequentialScanning {
-		ui.SetAnalyzer(analyze.CreateSeqAnalyzer())
+	ui, err := a.createUI(front, analyzer, &settings)
+	if err != nil {
+		return err
 	}
-	if a.Flags.FollowSymlinks {
-		ui.SetFollowSymlinks(true)
-	}
-	if a.Flags.ShowAnnexedSize {
-		ui.SetShowAnnexedSize(true)
-	}
-	if a.Flags.ExclusiveSize {
-		ui.SetExclusiveSize(true)
-	}
-	if a.Flags.ArchiveBrowsing {
-		ui.SetArchiveBrowsing(true)
-	}
-	if a.Flags.CollapsePath {
-		ui.SetCollapsePath(true)
-	}
-
-	// Set up time filter if any time flags are provided
-	if a.Flags.Since != "" || a.Flags.Until != "" || a.Flags.MaxAge != "" || a.Flags.MinAge != "" {
-		if err := a.setTimeFilters(ui); err != nil {
-			return err
-		}
-	}
-	for _, path := range paths {
-		if err := a.setNoCross(path); err != nil {
-			return err
-		}
-	}
-
-	// Process type filters
-	if len(a.Flags.TypeFilter) > 0 {
-		ui.SetIncludeTypes(a.Flags.TypeFilter)
-	}
-	if len(a.Flags.ExcludeTypeFilter) > 0 {
-		ui.SetIgnoreTypes(a.Flags.ExcludeTypeFilter)
-	}
-
-	ui.SetIgnoreDirPaths(a.Flags.IgnoreDirs)
-
-	if len(a.Flags.IgnoreDirPatterns) > 0 {
-		if err := ui.SetIgnoreDirPatterns(a.Flags.IgnoreDirPatterns); err != nil {
-			return err
-		}
-	}
-
-	if a.Flags.IgnoreFromFile != "" {
-		if err := ui.SetIgnoreFromFile(a.Flags.IgnoreFromFile); err != nil {
-			return err
-		}
-	}
-
-	if a.Flags.IgnoreFromGitignore != "" {
-		// the scanned roots are needed so that patterns anchored with a
-		// leading / can be matched against the absolute paths gdu scans
-		if err := ui.SetIgnoreFromGitignoreFile(a.Flags.IgnoreFromGitignore, paths); err != nil {
-			return err
-		}
-	}
-
-	if a.Flags.NoHidden {
-		ui.SetIgnoreHidden(true)
-	}
-	if a.Flags.NoCross {
-		ui.SetIgnoreOtherFilesystems(true)
-	}
-
-	a.setMaxProcs()
 
 	if err := a.runAction(ui, paths); err != nil {
 		return err
@@ -419,19 +327,6 @@ func (a *App) resolvePaths() ([]string, error) {
 	return paths, nil
 }
 
-// checkMultiPathSupport rejects the modes that cannot represent more than one
-// scanned root. Both the JSON export format and the on-disk storage are keyed
-// by a single root, so there is nowhere to put a virtual top level dir.
-func (a *App) checkMultiPathSupport() error {
-	switch {
-	case a.Flags.OutputFile != "":
-		return errors.New("--output-file accepts only one directory to scan")
-	case a.Flags.DbPath != "":
-		return errors.New("--db accepts only one directory to scan")
-	}
-	return nil
-}
-
 // isSubPath reports whether path lies inside parent. Both must be absolute and
 // cleaned, as returned by filepath.Abs.
 func isSubPath(path, parent string) bool {
@@ -447,337 +342,44 @@ func isSubPath(path, parent string) bool {
 	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-func (a *App) setMaxProcs() {
-	if a.Flags.MaxCores < 1 || a.Flags.MaxCores > runtime.NumCPU() {
-		return
-	}
-
-	runtime.GOMAXPROCS(a.Flags.MaxCores)
-
-	// runtime.GOMAXPROCS(n) with n < 1 doesn't change current setting so we use it to check current value
-	log.Printf("Max cores set to %d", runtime.GOMAXPROCS(0))
-}
-
-func (a *App) setTimeFilters(ui UI) error {
-	loc := time.Local
-	now := time.Now()
-
-	timeFilter, err := timefilter.NewTimeFilter(
-		a.Flags.Since,
-		a.Flags.Until,
-		a.Flags.MaxAge,
-		a.Flags.MinAge,
-		now,
-		loc,
-	)
-	if err != nil {
-		return fmt.Errorf("invalid time filter: %w", err)
-	}
-
-	if !timeFilter.IsEmpty() {
-		timeFilterFunc := func(mtime time.Time) bool {
-			return timeFilter.IncludeByTimeFilter(mtime, loc)
-		}
-		ui.SetTimeFilter(timeFilterFunc)
-
-		// If this is a TUI, also set the filter info for display
-		if tuiUI, ok := ui.(*tui.UI); ok {
-			tuiUI.SetTimeFilterWithInfo(timeFilter, loc)
-		}
-	}
-	return nil
-}
-
-func (a *App) createUI(outputAttributes gfs.JSONAttributes) (UI, error) {
-	var ui UI
-	var err error
-
-	switch {
-	case a.Flags.Web:
-		webUI := webui.CreateUI(
-			a.Writer,
-			a.Flags.WebConfig.Listen,
-			a.Flags.WebConfig.OpenBrowser,
-			a.Flags.WebConfig.Browser,
-			!a.Flags.NoColor,
-			a.Flags.ShowApparentSize,
-			a.Flags.ShowRelativeSize,
-			a.Flags.UseSIPrefix,
-		)
-		if a.Flags.NoDelete {
-			webUI.SetNoDelete()
-		}
-		if a.Flags.TrashCommand != "" {
-			webUI.SetTrashCommand(a.Flags.TrashCommand)
-		}
-		if err := webUI.SetCleanupConfig(a.Flags.Cleanup); err != nil {
-			return nil, fmt.Errorf("cleanup config: %w", err)
-		}
-		ui = webUI
-	case a.Flags.OutputFile != "":
-		var output io.Writer
-		if a.Flags.OutputFile == "-" {
-			output = os.Stdout
-		} else {
-			output, err = os.OpenFile(a.Flags.OutputFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+// createUI returns the frontend front for the settings s, scanning with
+// analyzer.
+func (a *App) createUI(front frontend, analyzer analyze.Analyzer, s *config.Settings) (UI, error) {
+	switch front {
+	case frontendWeb:
+		return webui.CreateUI(a.Writer, analyzer, s)
+	case frontendExport:
+		var output io.Writer = os.Stdout
+		if a.Flags.OutputFile != "-" {
+			file, err := newOutputFile(a.Flags.OutputFile)
 			if err != nil {
-				return nil, fmt.Errorf("opening output file: %w", err)
+				return nil, err
 			}
+			output = file
 		}
-		ui = report.CreateExportUI(
-			a.Writer,
-			output,
-			!a.Flags.NoColor && a.Istty,
-			!a.Flags.NoProgress && a.Istty,
-			a.Flags.UseSIPrefix,
-			a.Flags.Top,
-			a.Flags.Depth,
-			a.Flags.Summarize,
-			outputAttributes,
-		)
-	case a.Flags.ShouldRunInNonInteractiveMode(a.Istty):
-		fixedUnit := ""
-		if a.Flags.ShowInKiB {
-			fixedUnit = "k"
+		return report.CreateExportUI(a.Writer, output, analyzer, s), nil
+	case frontendStdout:
+		errWriter := a.ErrWriter
+		if errWriter == nil {
+			errWriter = os.Stderr
 		}
-		stdoutUI := stdout.CreateStdoutUI(
-			a.Writer,
-			!a.Flags.NoColor && a.Istty,
-			!a.Flags.NoProgress && a.Istty,
-			a.Flags.ShowApparentSize,
-			a.Flags.ShowRelativeSize,
-			a.Flags.Summarize,
-			a.Flags.UseSIPrefix,
-			a.Flags.NoPrefix,
-			fixedUnit,
-			a.Flags.Top,
-			a.Flags.ReverseSort,
-			a.Flags.Depth,
-		)
-		stdoutUI.SetDefaultSorting(a.Flags.Sorting.By, a.Flags.Sorting.Order)
-
-		if a.Flags.NoUnicode {
-			stdoutUI.UseOldProgressRunes()
-		}
-		if a.Flags.ShowItemCount {
-			stdoutUI.SetShowItemCount()
-		}
-		if a.Flags.ShowSymlinkTarget {
-			stdoutUI.SetShowSymlinkTarget(true)
-		}
-		ui = stdoutUI
-	default:
-		opts := a.getOptions()
-
-		ui = tui.CreateUI(
-			a.TermApp,
-			a.Screen,
-			os.Stdout,
-			!a.Flags.NoColor,
-			a.Flags.ShowApparentSize,
-			a.Flags.ShowRelativeSize,
-			a.Flags.UseSIPrefix,
-			opts...,
-		)
-
-		if !a.Flags.NoColor {
-			tview.Styles.TitleColor = tcell.NewRGBColor(27, 161, 227)
-		} else {
-			tview.Styles.ContrastBackgroundColor = tcell.NewRGBColor(150, 150, 150)
-		}
-		tview.Styles.BorderColor = tcell.ColorDefault
+		return stdout.CreateStdoutUI(a.Writer, errWriter, analyzer, s), nil
+	case frontendTUI:
 	}
-
-	return ui, nil
-}
-
-// nolint:gocyclo,funlen // This function is a suite of if statements
-func (a *App) getOptions() []tui.Option {
-	var opts []tui.Option
-
-	if a.Flags.Style.SelectedRow.TextColor != "" {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetSelectedTextColor(tcell.GetColor(a.Flags.Style.SelectedRow.TextColor))
-		})
-	}
-	if a.Flags.Style.SelectedRow.BackgroundColor != "" {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetSelectedBackgroundColor(tcell.GetColor(a.Flags.Style.SelectedRow.BackgroundColor))
-		})
-	}
-	if a.Flags.Style.Marked.TextColor != "" {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetMarkedTextColor(tcell.GetColor(a.Flags.Style.Marked.TextColor))
-		})
-	}
-	if a.Flags.Style.Marked.BackgroundColor != "" {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetMarkedBackgroundColor(tcell.GetColor(a.Flags.Style.Marked.BackgroundColor))
-		})
-	}
-	if a.Flags.Style.Footer.TextColor != "" {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetFooterTextColor(a.Flags.Style.Footer.TextColor)
-		})
-	}
-	if a.Flags.Style.Footer.BackgroundColor != "" {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetFooterBackgroundColor(a.Flags.Style.Footer.BackgroundColor)
-		})
-	}
-	if a.Flags.Style.Footer.NumberColor != "" {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetFooterNumberColor(a.Flags.Style.Footer.NumberColor)
-		})
-	}
-	if a.Flags.Style.Header.TextColor != "" {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetHeaderTextColor(a.Flags.Style.Header.TextColor)
-		})
-	}
-	if a.Flags.Style.Header.BackgroundColor != "" {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetHeaderBackgroundColor(a.Flags.Style.Header.BackgroundColor)
-		})
-	}
-	if a.Flags.Style.Header.Hidden {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetHeaderHidden()
-		})
-	}
-	if a.Flags.Style.ResultRow.NumberColor != "" {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetResultRowNumberColor(a.Flags.Style.ResultRow.NumberColor)
-		})
-	}
-	if a.Flags.Style.ResultRow.DirectoryColor != "" {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetResultRowDirectoryColor(a.Flags.Style.ResultRow.DirectoryColor)
-		})
-	}
-	if a.Flags.Style.ProgressModal.CurrentItemNameMaxLen > 0 {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetCurrentItemNameMaxLen(a.Flags.Style.ProgressModal.CurrentItemNameMaxLen)
-		})
-	}
-	if a.Flags.Style.UseOldSizeBar || a.Flags.NoUnicode {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.UseOldSizeBar()
-		})
-	}
-	if a.Flags.Style.ShowBarPercentage {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetShowBarPercentage()
-		})
-	}
-	if a.Flags.Style.ShowItemCountBar {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetShowItemCountBar()
-		})
-	}
-	if a.Flags.Sorting.Order != "" || a.Flags.Sorting.By != "" {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetDefaultSorting(a.Flags.Sorting.By, a.Flags.Sorting.Order)
-		})
-	}
-	if a.Flags.ChangeCwd {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetChangeCwdFn(os.Chdir)
-		})
-	}
-	if a.Flags.ShowItemCount {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetShowItemCount()
-		})
-	}
-	if a.Flags.ShowMTime {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetShowMTime()
-		})
-	}
-	if a.Flags.ShowSymlinkTarget {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetShowSymlinkTarget(true)
-		})
-	}
-	if a.Flags.NoDelete {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetNoDelete()
-		})
-	}
-	if a.Flags.NoViewFile {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetNoViewFile()
-		})
-	}
-	if a.Flags.NoSpawnShell {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetNoSpawnShell()
-		})
-	}
-	if a.Flags.NoConfirmQuit {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetConfirmQuit(false)
-		})
-	}
-	if a.Flags.CtrlCQuits {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetCtrlCQuits()
-		})
-	}
-	if a.Flags.DeleteInBackground {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetDeleteInBackground()
-		})
-	}
-	if a.Flags.DeleteInParallel {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetDeleteInParallel()
-		})
-	}
-	if a.Flags.TrashCommand != "" {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetTrashCommand(a.Flags.TrashCommand)
-		})
-	}
-	if a.Flags.Shell != "" {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetShellBin(a.Flags.Shell)
-		})
-	}
-	if a.Flags.BrowseParentDirs {
-		opts = append(opts, func(ui *tui.UI) {
-			ui.SetBrowseParentDirs()
-		})
-	}
-	opts = append(opts, func(ui *tui.UI) {
-		ui.SetShowDiskProgressBar(a.Flags.Style.ProgressModal.ShowDiskProgressBar)
-	})
-	return opts
-}
-
-func (a *App) setNoCross(path string) error {
-	if a.Flags.NoCross {
-		mounts, err := a.Getter.GetMounts()
-		if err != nil {
-			return fmt.Errorf("loading mount points: %w", err)
-		}
-		paths := device.GetNestedMountpointsPaths(path, mounts)
-		log.Printf("Ignoring mount points: %s", strings.Join(paths, ", "))
-		a.Flags.IgnoreDirs = append(a.Flags.IgnoreDirs, paths...)
-	}
-	return nil
+	return tui.CreateUI(a.TermApp, a.Screen, os.Stdout, analyzer, s), nil
 }
 
 func (a *App) runAction(ui UI, paths []string) error {
 	if a.Flags.Profiling {
+		// a mux of its own, rather than the process's http.DefaultServeMux
+		mux := http.NewServeMux()
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 		go func() {
-			http.HandleFunc("/debug/pprof/", pprof.Index)
-			http.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-			http.HandleFunc("/debug/pprof/profile", pprof.Profile)
-			http.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-			http.HandleFunc("/debug/pprof/trace", pprof.Trace)
-			log.Println(http.ListenAndServe("localhost:6060", nil))
+			slog.Error("profiling server", "err", http.ListenAndServe("localhost:6060", mux))
 		}()
 	}
 
@@ -801,12 +403,21 @@ func (a *App) runAction(ui UI, paths []string) error {
 		if err := ui.ReadAnalysis(input); err != nil {
 			return fmt.Errorf("reading analysis: %w", err)
 		}
+	case a.Flags.ReadFromStorage:
+		// a database holds a single scanned root, see checkMultiPathSupport;
+		// the path is not checked, the analysis is readable even when the
+		// directory is gone
+		path := build.RootPathPrefix + paths[0]
+		slog.Info("reading stored analysis", "path", path)
+		if err := ui.ReadFromStorage(path); err != nil {
+			return fmt.Errorf("reading stored analysis: %w", err)
+		}
 	default:
 		// Do not materialize dataless files on macOS. Without this, scanning
 		// an iCloud Drive / Google Drive / OneDrive tree is orders of
 		// magnitude slower. This is a no-op on other platforms.
 		if err := gfs.PreventDatalessMaterialization(); err != nil {
-			log.Printf("Could not prevent dataless materialization: %s", err)
+			slog.Warn("preventing dataless materialization", "err", err)
 		}
 
 		scanPaths := make([]string, 0, len(paths))
@@ -822,14 +433,14 @@ func (a *App) runAction(ui UI, paths []string) error {
 		}
 
 		if len(scanPaths) == 1 {
-			log.Printf("Analyzing path: %s", scanPaths[0])
+			slog.Info("analyzing", "path", scanPaths[0])
 			if err := ui.AnalyzePath(scanPaths[0], nil); err != nil {
 				return fmt.Errorf("scanning dir: %w", err)
 			}
 			break
 		}
 
-		log.Printf("Analyzing paths: %s", strings.Join(scanPaths, ", "))
+		slog.Info("analyzing", "paths", scanPaths)
 		if err := ui.AnalyzePaths(scanPaths); err != nil {
 			return fmt.Errorf("scanning dirs: %w", err)
 		}
